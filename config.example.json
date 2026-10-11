@@ -1,0 +1,16 @@
+{
+  "listen": "192.168.1.10:8765",
+  "token": "change-me-run-start.ps1--NewToken",
+  "allowed_ips": ["192.168.1.20"],
+  "roots": ["D:\\projects"],
+  "path_aliases": {},
+  "default_shell": "",
+  "command_timeout_sec": 600,
+  "max_command_timeout_sec": 3600,
+  "max_output_bytes": 25000,
+  "max_read_bytes": 60000,
+  "max_result_bytes": 60000,
+  "output_dir": "",
+  "audit_log": "mcp-shell-audit.log",
+  "log_file": "mcp-shell.log"
+}

@@ -131,7 +131,7 @@ func TestBackgroundProcess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := m.Read(p.ID, 0, 10_000)
+	out, err := m.Read(p.ID, ReadOptions{WaitMs: 10_000})
 	if err != nil {
 		t.Fatal(err)
 	}

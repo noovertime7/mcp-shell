@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -20,22 +21,27 @@ import (
 	"github.com/noovertime7/mcp-shell/internal/config"
 	"github.com/noovertime7/mcp-shell/internal/exectools"
 	"github.com/noovertime7/mcp-shell/internal/fstools"
+	"github.com/noovertime7/mcp-shell/internal/history"
 	"github.com/noovertime7/mcp-shell/internal/mcp"
 	"github.com/noovertime7/mcp-shell/internal/pathguard"
 )
 
 // Version is reported to MCP clients.
-const Version = "0.1.0"
+const Version = "0.2.0"
 
 // Server is the mcp-shell server.
 type Server struct {
-	cfg    *config.Config
-	guard  *pathguard.Guard
-	fs     *fstools.FS
-	runner *exectools.Runner
-	procs  *exectools.Manager
-	mcp    *mcp.Server
-	nets   []*net.IPNet
+	cfg     *config.Config
+	guard   *pathguard.Guard
+	fs      *fstools.FS
+	runner  *exectools.Runner
+	procs   *exectools.Manager
+	mcp     *mcp.Server
+	nets    []*net.IPNet
+	history *history.Store
+	// scratch is a directory for temporary files of the model (commit
+	// messages, patches), offered in list_roots; empty without output_dir.
+	scratch string
 
 	auditMu sync.Mutex
 	audit   *os.File
@@ -66,8 +72,25 @@ func New(cfg *config.Config) (*Server, error) {
 		}
 		exectools.CleanLogs(cfg.OutputDir, 3*24*time.Hour)
 		s.runner.LogDir = cfg.OutputDir
+		s.scratch = filepath.Join(cfg.OutputDir, "scratch")
+		if err := os.MkdirAll(s.scratch, 0o755); err != nil {
+			s.scratch = ""
+		}
 	}
 	s.procs = exectools.NewManager(s.runner)
+	if cfg.MaxCallWaitSec > 0 {
+		wait := time.Duration(cfg.MaxCallWaitSec) * time.Second
+		s.runner.DetachAfter = wait
+		s.runner.Procs = s.procs
+		s.procs.MaxWait = wait
+	}
+	if cfg.HistoryDir != "" {
+		h, err := history.Open(cfg.HistoryDir, cfg.HistoryDays)
+		if err != nil {
+			return nil, err
+		}
+		s.history = h
+	}
 	for _, a := range cfg.AllowedIPs {
 		n, err := parseIPNet(a)
 		if err != nil {
@@ -118,12 +141,36 @@ func (s *Server) instructions() string {
 	return fmt.Sprintf(`mcp-shell gives you access to a %s host machine.
 - %s
 - Configured directories: %s. Relative paths use the first directory. Prefer absolute paths on this host.%s
-- Read before you edit: use read_file, then edit_file with an exact, unique old_string. Use write_file only for new files or full rewrites.
-- run_command runs one command and waits (default shell: %s, default timeout %ds). Use it for builds, tests, git and package managers.
-- For dev servers or anything that keeps running, use start_process, then read_process_output (with wait_ms) and stop_process when done.
+- Start with list_roots (shell, scratch directory, which tools are on PATH). system_info shows OS, memory, disks and tool versions; get_env shows environment variables (PATH one entry per line).
+- Read before you edit: use read_file, then edit_file with an exact, unique old_string, or multi_edit for several changes to one file. Use write_file only for new files or full rewrites.
+- run_command runs one command and waits (default shell: %s, default timeout %ds). Use it for builds, tests, git and package managers.%s
+- For dev servers or anything that keeps running, use start_process, then read_process_output and stop_process when done. read_process_output can wait until_exit, or wait_for a regexp such as "listening on"; tail=true shows the end of long output.
 - Commands are non-interactive: stdin is empty, so pass flags like -y/--yes instead of waiting for prompts.
-- Long output is cut in the middle; the full log is kept on disk (full_output: in the result) and can be read with read_file or grep.`,
-		runtime.GOOS, scope, strings.Join(s.guard.Roots(), ", "), s.aliasHint(), s.cfg.DefaultShell, s.cfg.CommandTimeoutSec)
+- Long output is cut in the middle; the full log is kept on disk (full_output: in the result) and can be read with read_file or grep.
+- glob and grep skip files ignored by .gitignore (build output such as dist/); pass include_ignored=true to search them.%s%s`,
+		runtime.GOOS, scope, strings.Join(s.guard.Roots(), ", "), s.aliasHint(), s.cfg.DefaultShell, s.cfg.CommandTimeoutSec,
+		s.detachHint(), s.shellHint(), s.historyHint())
+}
+
+func (s *Server) detachHint() string {
+	if s.runner.DetachAfter <= 0 {
+		return ""
+	}
+	return fmt.Sprintf(" A command still running after %s is not killed: the call returns with exit_code none and the command continues as a background process; follow the next: line (read_process_output with until_exit=true) to get its result.", s.runner.DetachAfter)
+}
+
+func (s *Server) shellHint() string {
+	if s.cfg.DefaultShell != "powershell" {
+		return ""
+	}
+	return "\n- The default shell is Windows PowerShell 5.1: there is no && or || (use ; and check if ($LASTEXITCODE -ne 0) { ... }), and do not add 2>&1 to native commands (stderr is already returned separately). File cmdlets (Get-Content, Set-Content, Out-File and >) use UTF-8 here; use write_file when the exact bytes matter. A .ps1 file you write and then run must start with a UTF-8 BOM if it contains non-ASCII text, or PowerShell 5.1 misreads it; prefer passing the script as the run_command command."
+}
+
+func (s *Server) historyHint() string {
+	if s.history == nil {
+		return ""
+	}
+	return "\n- operation_history lists earlier tool calls on this host, including those of other sessions (filter by tool, text, failed_only, since; pass id for the details of one call). Check it before redoing work or when a change is unexplained."
 }
 
 func (s *Server) aliasHint() string {
@@ -155,7 +202,7 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(withClient(r.Context(), clientLabel(ip, r.UserAgent()))))
 	})
 }
 
@@ -229,35 +276,67 @@ func (s *Server) auditEvent(ev map[string]any) {
 }
 
 // summarize turns tool input into an audit-friendly map: large text fields
-// are replaced by their length and long strings are clipped.
+// are replaced by their length, values of env are hidden and long strings
+// are clipped.
 func summarize(in any) map[string]any {
+	return summarizeArgs(in, 500)
+}
+
+// summarizeArgs is summarize with strings clipped at max bytes.
+func summarizeArgs(in any, max int) map[string]any {
 	raw, _ := json.Marshal(in)
 	var m map[string]any
 	if json.Unmarshal(raw, &m) != nil {
 		return nil
 	}
+	summarizeMap(m, max)
+	return m
+}
+
+func summarizeMap(m map[string]any, max int) {
 	for k, v := range m {
-		str, ok := v.(string)
-		if !ok {
-			continue
-		}
-		switch k {
-		case "content", "old_string", "new_string":
-			m[k] = fmt.Sprintf("<%d bytes>", len(str))
-		default:
-			if len(str) > 500 {
-				m[k] = str[:500] + "…"
+		switch val := v.(type) {
+		case string:
+			switch k {
+			case "content", "old_string", "new_string":
+				m[k] = fmt.Sprintf("<%d bytes>", len(val))
+			default:
+				m[k] = clipBytes(val, max)
+			}
+		case map[string]any:
+			if k == "env" {
+				for name := range val {
+					val[name] = "<hidden>"
+				}
+				continue
+			}
+			summarizeMap(val, max)
+		case []any:
+			for _, item := range val {
+				if child, ok := item.(map[string]any); ok {
+					summarizeMap(child, max)
+				}
 			}
 		}
 	}
-	return m
+}
+
+func clipBytes(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
 }
 
 // ---------- tool plumbing ----------
 
 // addTool registers a tool whose handler returns plain text. Errors become
 // tool results with isError set, so the model sees the message and can react.
-// Every call is written to the operation log and the audit log.
+// Every call is written to the operation log, the audit log and the history.
 func addTool[In any](s *Server, name, desc string, fn func(ctx context.Context, in In) (string, error)) {
 	s.mcp.AddTool(mcp.Typed(name, desc, func(ctx context.Context, in In) (string, error) {
 		start := time.Now()
@@ -265,6 +344,7 @@ func addTool[In any](s *Server, name, desc string, fn func(ctx context.Context, 
 		out, err := fn(ctx, in)
 		elapsed := time.Since(start)
 		s.logCall(name, in, out, err, elapsed)
+		s.record(ctx, name, in, out, err, start, elapsed)
 		ev := map[string]any{
 			"event":       "tool",
 			"tool":        name,

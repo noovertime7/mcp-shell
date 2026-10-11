@@ -5,21 +5,36 @@ import (
 )
 
 // psPrologue makes PowerShell write UTF-8 without a BOM and hides progress
-// bars, which would otherwise show up as noise on stderr.
+// bars, which would otherwise show up as noise on stderr. Windows PowerShell
+// 5 also reads and writes files in the ANSI code page by default (and ">"
+// writes UTF-16), which garbles Chinese source files; its file cmdlets are
+// switched to UTF-8. $Error is cleared so the epilogue sees only this script.
 const psPrologue = `$ProgressPreference = 'SilentlyContinue'
 try {
   $__mcpshell_enc = New-Object System.Text.UTF8Encoding $false
   [Console]::OutputEncoding = $__mcpshell_enc
   $OutputEncoding = $__mcpshell_enc
 } catch {}
+if ($PSVersionTable.PSVersion.Major -lt 6) {
+  foreach ($__mcpshell_cmd in 'Get-Content', 'Set-Content', 'Add-Content', 'Out-File', 'Select-String', 'Import-Csv', 'Export-Csv') {
+    $PSDefaultParameterValues["$($__mcpshell_cmd):Encoding"] = 'UTF8'
+  }
+}
+$Error.Clear()
 `
 
 // psEpilogue propagates native exit codes and PowerShell failures as the
-// process exit code.
+// process exit code. A native command that writes to a redirected stderr
+// (git's warnings, "2>&1", "2>$null") leaves $? false and a
+// NativeCommandError behind although it succeeded; only other errors count.
 const psEpilogue = `
 $__mcpshell_ok = $?
 if ($global:LASTEXITCODE) { exit $global:LASTEXITCODE }
-if (-not $__mcpshell_ok) { exit 1 }
+if (-not $__mcpshell_ok) {
+  foreach ($__mcpshell_e in $Error) {
+    if (-not ($__mcpshell_e -is [System.Management.Automation.ErrorRecord]) -or $__mcpshell_e.FullyQualifiedErrorId -notlike 'NativeCommandError*') { exit 1 }
+  }
+}
 exit 0
 `
 

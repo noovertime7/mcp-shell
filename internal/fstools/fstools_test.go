@@ -136,7 +136,7 @@ func TestGlobAndGrep(t *testing.T) {
 	write(t, filepath.Join(root, "a", "b", "x.ts"), "export const hello = 1\n")
 	write(t, filepath.Join(root, "node_modules", "dep", "y.ts"), "hello\n")
 
-	out, err := f.Glob("**/*.{go,ts}", "")
+	out, err := f.Glob("**/*.{go,ts}", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}

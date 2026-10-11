@@ -6,9 +6,12 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/noovertime7/mcp-shell/internal/exectools"
 	"github.com/noovertime7/mcp-shell/internal/fstools"
+	"github.com/noovertime7/mcp-shell/internal/history"
+	"github.com/noovertime7/mcp-shell/internal/sysinfo"
 )
 
 type listRootsIn struct{}
@@ -49,19 +52,26 @@ type movePathIn struct {
 	Overwrite bool   `json:"overwrite,omitempty" jsonschema:"replace dst if it is an existing file"`
 }
 
+type multiEditIn struct {
+	Path  string         `json:"path" jsonschema:"file to edit"`
+	Edits []fstools.Edit `json:"edits" jsonschema:"replacements applied in order, each to the result of the previous one; the file is written only if all of them apply"`
+}
+
 type globIn struct {
-	Pattern string `json:"pattern" jsonschema:"glob relative to path, e.g. **/*.go or src/**/*.{ts,tsx}"`
-	Path    string `json:"path,omitempty" jsonschema:"directory to search in; defaults to the first root"`
+	Pattern        string `json:"pattern" jsonschema:"glob relative to path, e.g. **/*.go or src/**/*.{ts,tsx}"`
+	Path           string `json:"path,omitempty" jsonschema:"directory to search in; defaults to the first root"`
+	IncludeIgnored bool   `json:"include_ignored,omitempty" jsonschema:"also list files ignored by .gitignore (build output, dependencies)"`
 }
 
 type grepIn struct {
-	Pattern    string `json:"pattern" jsonschema:"regular expression (Go RE2 syntax)"`
-	Path       string `json:"path,omitempty" jsonschema:"file or directory to search; defaults to the first root"`
-	Glob       string `json:"glob,omitempty" jsonschema:"only search files matching this glob, e.g. *.go or **/*.{ts,vue}"`
-	IgnoreCase bool   `json:"ignore_case,omitempty" jsonschema:"case-insensitive match"`
-	Context    int    `json:"context,omitempty" jsonschema:"lines of context around each match (0-10)"`
-	MaxResults int    `json:"max_results,omitempty" jsonschema:"stop after this many matches (default 200)"`
-	FilesOnly  bool   `json:"files_only,omitempty" jsonschema:"list matching file paths only"`
+	Pattern        string `json:"pattern" jsonschema:"regular expression (Go RE2 syntax)"`
+	Path           string `json:"path,omitempty" jsonschema:"file or directory to search; defaults to the first root"`
+	Glob           string `json:"glob,omitempty" jsonschema:"only search files matching this glob, e.g. *.go or **/*.{ts,vue}"`
+	IgnoreCase     bool   `json:"ignore_case,omitempty" jsonschema:"case-insensitive match"`
+	Context        int    `json:"context,omitempty" jsonschema:"lines of context around each match (0-10)"`
+	MaxResults     int    `json:"max_results,omitempty" jsonschema:"stop after this many matches (default 200)"`
+	FilesOnly      bool   `json:"files_only,omitempty" jsonschema:"list matching file paths only"`
+	IncludeIgnored bool   `json:"include_ignored,omitempty" jsonschema:"also search files ignored by .gitignore (build output such as dist/)"`
 }
 
 type runCommandIn struct {
@@ -81,9 +91,12 @@ type startProcessIn struct {
 }
 
 type readProcessIn struct {
-	ID          string `json:"id" jsonschema:"process id returned by start_process"`
+	ID          string `json:"id" jsonschema:"process id returned by start_process (or by a run_command that moved to the background)"`
 	SinceOffset int64  `json:"since_offset,omitempty" jsonschema:"next_offset from the previous read; 0 reads from the start"`
-	WaitMs      int    `json:"wait_ms,omitempty" jsonschema:"wait up to this long (max 30000) for new output or exit"`
+	WaitMs      int    `json:"wait_ms,omitempty" jsonschema:"wait up to this long for new output (capped at the server's max wait, 45000 by default)"`
+	UntilExit   bool   `json:"until_exit,omitempty" jsonschema:"wait for the process to exit instead of returning at the first new output"`
+	WaitFor     string `json:"wait_for,omitempty" jsonschema:"wait until the new output matches this regexp (Go RE2), e.g. 'listening on|ready in'"`
+	Tail        bool   `json:"tail,omitempty" jsonschema:"when the new output is long, return its end instead of its start"`
 }
 
 type procIDIn struct {
@@ -92,8 +105,21 @@ type procIDIn struct {
 
 type listProcessesIn struct{}
 
+type systemInfoIn struct{}
+
+type historyIn struct {
+	ID          int64  `json:"id,omitempty" jsonschema:"show the arguments and output of this one call"`
+	Limit       int    `json:"limit,omitempty" jsonschema:"how many calls to list (default 30, max 200)"`
+	Offset      int    `json:"offset,omitempty" jsonschema:"skip this many matching calls (for paging)"`
+	Tool        string `json:"tool,omitempty" jsonschema:"only calls of this tool, e.g. run_command or edit_file"`
+	Query       string `json:"query,omitempty" jsonschema:"only calls whose arguments, output or error contain this text (case-insensitive), e.g. a file name or a command"`
+	FailedOnly  bool   `json:"failed_only,omitempty" jsonschema:"only failed, timed-out or rejected calls"`
+	ChangesOnly bool   `json:"changes_only,omitempty" jsonschema:"leave out read-only calls (read_file, grep, list_dir, ...)"`
+	Since       string `json:"since,omitempty" jsonschema:"only calls after this: a duration back from now (30m, 2h, 3d) or a time (2026-10-11, 2026-10-11 15:04)"`
+}
+
 func (s *Server) registerTools() {
-	addTool(s, "list_roots", "Show the host OS, the allowed root directories, path aliases and the default shell. Call this first.",
+	addTool(s, "list_roots", "Show the host OS, the allowed root directories, path aliases, the default shell, a scratch directory for temporary files and which developer tools are on PATH. Call this first.",
 		func(ctx context.Context, _ listRootsIn) (string, error) {
 			host, _ := os.Hostname()
 			var b strings.Builder
@@ -102,8 +128,12 @@ func (s *Server) registerTools() {
 			} else {
 				b.WriteString("access_mode: restricted (configured roots only)\n")
 			}
-			fmt.Fprintf(&b, "host: %s (%s/%s)\ndefault_shell: %s\ncommand_timeout_sec: %d (max %d)\nroots:\n",
+			fmt.Fprintf(&b, "host: %s (%s/%s)\ndefault_shell: %s\ncommand_timeout_sec: %d (max %d)\n",
 				host, runtime.GOOS, runtime.GOARCH, s.cfg.DefaultShell, s.cfg.CommandTimeoutSec, s.cfg.MaxCommandTimeoutSec)
+			if s.runner.DetachAfter > 0 {
+				fmt.Fprintf(&b, "max_call_wait_sec: %d (run_command moves a longer command to the background)\n", int(s.runner.DetachAfter.Seconds()))
+			}
+			b.WriteString("roots:\n")
 			for _, r := range s.guard.Roots() {
 				fmt.Fprintf(&b, "  %s\n", r)
 			}
@@ -113,6 +143,13 @@ func (s *Server) registerTools() {
 					fmt.Fprintf(&b, "  %s -> %s\n", from, to)
 				}
 			}
+			if s.scratch != "" {
+				fmt.Fprintf(&b, "scratch_dir: %s (put temporary files such as commit messages or patches here)\n", s.scratch)
+			}
+			if s.history != nil {
+				fmt.Fprintf(&b, "history: %s (operation_history, kept %d days)\n", s.history.Dir(), s.history.KeepDays())
+			}
+			fmt.Fprintf(&b, "tools: %s (versions: system_info)\n", sysinfo.Summary(sysinfo.FindTools()))
 			return b.String(), nil
 		})
 
@@ -136,6 +173,11 @@ func (s *Server) registerTools() {
 			return s.fs.EditFile(in.Path, in.OldString, in.NewString, in.ReplaceAll)
 		})
 
+	addTool(s, "multi_edit", "Make several exact-string replacements in one file in one call. Edits apply in order, each to the result of the previous one, with the same rules as edit_file; if any edit does not apply, nothing is written and the error names the edit.",
+		func(ctx context.Context, in multiEditIn) (string, error) {
+			return s.fs.MultiEdit(in.Path, in.Edits)
+		})
+
 	addTool(s, "delete_path", "Delete a file, an empty directory, or (with recursive=true) a directory tree. In restricted mode configured root directories cannot be deleted; unrestricted mode allows any path the OS user can remove.",
 		func(ctx context.Context, in deletePathIn) (string, error) {
 			return s.fs.DeletePath(in.Path, in.Recursive)
@@ -146,20 +188,21 @@ func (s *Server) registerTools() {
 			return s.fs.MovePath(in.Src, in.Dst, in.Overwrite)
 		})
 
-	addTool(s, "glob", "Find files by glob pattern (** and {a,b} supported), newest first. Skips .git and node_modules unless the pattern names them.",
+	addTool(s, "glob", "Find files by glob pattern (** and {a,b} supported), newest first. Skips .git, node_modules and files ignored by .gitignore unless the pattern names them or include_ignored is set.",
 		func(ctx context.Context, in globIn) (string, error) {
-			return s.fs.Glob(in.Pattern, in.Path)
+			return s.fs.Glob(in.Pattern, in.Path, in.IncludeIgnored)
 		})
 
-	addTool(s, "grep", "Search file contents with a regular expression. Output is path:line:text (context lines use '-'). Skips binary files, .git and node_modules.",
+	addTool(s, "grep", "Search file contents with a regular expression. Output is path:line:text (context lines use '-'). Skips binary files, .git, node_modules and files ignored by .gitignore (set include_ignored to search them).",
 		func(ctx context.Context, in grepIn) (string, error) {
 			return s.fs.Grep(fstools.GrepOptions{
 				Pattern: in.Pattern, Path: in.Path, Glob: in.Glob, IgnoreCase: in.IgnoreCase,
 				Context: in.Context, MaxResults: in.MaxResults, FilesOnly: in.FilesOnly,
+				IncludeIgnored: in.IncludeIgnored,
 			})
 		})
 
-	addTool(s, "run_command", "Run a shell command on the host and wait for it. Returns exit code, stdout and stderr. The process tree is killed on timeout. Stdin is empty, so interactive prompts fail. Use start_process for servers and watchers.",
+	addTool(s, "run_command", "Run a shell command on the host and wait for it. Returns exit code, stdout and stderr. The process tree is killed on timeout. A command still running after the server's max wait (45s by default) keeps running in the background and the result says how to read the rest (read_process_output until_exit=true). Stdin is empty, so interactive prompts fail. Use start_process for servers and watchers.",
 		func(ctx context.Context, in runCommandIn) (string, error) {
 			res, err := s.runner.Run(ctx, exectools.RunRequest{
 				Command: in.Command, Cwd: in.Cwd, Shell: in.Shell, TimeoutSec: in.TimeoutSec, Env: in.Env,
@@ -180,12 +223,14 @@ func (s *Server) registerTools() {
 			if p.LogFile != "" {
 				out += "log: " + p.LogFile + "\n"
 			}
-			return out + fmt.Sprintf("next: read_process_output id=%s wait_ms=3000", p.ID), nil
+			return out + fmt.Sprintf("next: read_process_output id=%s wait_ms=3000 (a server: wait_for=<ready message>; a build or test: until_exit=true)", p.ID), nil
 		})
 
-	addTool(s, "read_process_output", "Read new output of a background process since an offset, plus whether it is still running. Pass the returned next_offset to the following call.",
+	addTool(s, "read_process_output", "Read new output of a background process since an offset, plus whether it is still running. Pass the returned next_offset to the following call. Waits with wait_ms for new output, until_exit for the process to end, or wait_for until the output matches a regexp; one call waits at most the server's max wait (45s by default), then call again.",
 		func(ctx context.Context, in readProcessIn) (string, error) {
-			return s.procs.Read(in.ID, in.SinceOffset, in.WaitMs)
+			return s.procs.Read(in.ID, exectools.ReadOptions{
+				Since: in.SinceOffset, WaitMs: in.WaitMs, UntilExit: in.UntilExit, WaitFor: in.WaitFor, Tail: in.Tail,
+			})
 		})
 
 	addTool(s, "list_processes", "List background processes started with start_process.",
@@ -197,4 +242,52 @@ func (s *Server) registerTools() {
 		func(ctx context.Context, in procIDIn) (string, error) {
 			return s.procs.Stop(in.ID)
 		})
+
+	addTool(s, "system_info", "Describe the host: OS version, user, CPUs, memory, disks, uptime, code page and time zone, and the developer tools on PATH with their versions (git, go, node, pnpm, python, java, docker, ...).",
+		func(ctx context.Context, _ systemInfoIn) (string, error) {
+			return s.systemInfo(ctx), nil
+		})
+
+	addTool(s, "get_env", "Show environment variables as commands see them: all of them, those matching a filter, or one by name. PATH-like variables are listed one entry per line with missing directories marked. On Windows scope=user or machine shows the values stored in the registry. Values that look like secrets are hidden unless show_secrets is set.",
+		func(ctx context.Context, in getEnvIn) (string, error) {
+			return s.getEnv(in)
+		})
+
+	if s.history != nil {
+		addTool(s, "operation_history", "List earlier tool calls on this host, newest first, from every session (kept on disk across restarts): time, tool, result, duration and the main argument. Filter by tool, query text, failed_only, changes_only or since; pass id to see one call's arguments and the start of its output.",
+			func(ctx context.Context, in historyIn) (string, error) {
+				return s.operationHistory(in)
+			})
+	}
+}
+
+// operationHistory is the operation_history tool.
+func (s *Server) operationHistory(in historyIn) (string, error) {
+	if in.ID > 0 {
+		e, err := s.history.Get(in.ID)
+		if err != nil {
+			return "", err
+		}
+		return formatHistoryEntry(e), nil
+	}
+	since, err := history.ParseSince(in.Since, time.Now())
+	if err != nil {
+		return "", err
+	}
+	if in.Limit > 200 {
+		in.Limit = 200
+	}
+	if in.Offset < 0 {
+		in.Offset = 0
+	}
+	q := history.Query{
+		Limit: in.Limit, Offset: in.Offset, Tool: in.Tool, Text: in.Query,
+		FailedOnly: in.FailedOnly, ChangesOnly: in.ChangesOnly, ReadOnly: readOnlyTools,
+		Exclude: map[string]bool{"operation_history": true}, Since: since,
+	}
+	entries, total, err := s.history.Find(q)
+	if err != nil {
+		return "", err
+	}
+	return formatHistoryList(s.history, entries, total, in.Offset), nil
 }

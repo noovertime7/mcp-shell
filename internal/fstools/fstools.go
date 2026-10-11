@@ -261,22 +261,63 @@ func atomicWrite(p string, data []byte) (existed bool, err error) {
 
 // ---------- edit_file ----------
 
+// Edit is one exact-string replacement.
+type Edit struct {
+	OldString  string `json:"old_string" jsonschema:"exact text to replace; must be unique in the file (after the earlier edits) unless replace_all is set"`
+	NewString  string `json:"new_string" jsonschema:"replacement text"`
+	ReplaceAll bool   `json:"replace_all,omitempty" jsonschema:"replace every occurrence"`
+}
+
 // EditFile replaces oldStr with newStr in path. Unless replaceAll is set,
 // oldStr must occur exactly once. Line endings and a UTF-8 BOM are preserved.
 func (f *FS) EditFile(path, oldStr, newStr string, replaceAll bool) (string, error) {
-	if oldStr == "" {
-		return "", errors.New("old_string must not be empty; use write_file to create or replace a whole file")
+	p, counts, err := f.applyEdits(path, []Edit{{OldString: oldStr, NewString: newStr, ReplaceAll: replaceAll}})
+	if err != nil {
+		return "", err
 	}
-	if oldStr == newStr {
-		return "", errors.New("old_string and new_string are identical")
+	return fmt.Sprintf("replaced %d occurrence(s) in %s", counts[0], p), nil
+}
+
+// MultiEdit applies edits to path in order, each to the result of the one
+// before. The file is written only if every edit applies.
+func (f *FS) MultiEdit(path string, edits []Edit) (string, error) {
+	if len(edits) == 0 {
+		return "", errors.New("edits must contain at least one edit")
+	}
+	p, counts, err := f.applyEdits(path, edits)
+	if err != nil {
+		return "", err
+	}
+	total := 0
+	for _, n := range counts {
+		total += n
+	}
+	return fmt.Sprintf("applied %d edit(s), %d replacement(s) in %s", len(edits), total, p), nil
+}
+
+func (f *FS) applyEdits(path string, edits []Edit) (string, []int, error) {
+	multi := len(edits) > 1
+	label := func(i int) string {
+		if multi {
+			return fmt.Sprintf("edit %d: ", i+1)
+		}
+		return ""
+	}
+	for i, e := range edits {
+		if e.OldString == "" {
+			return "", nil, fmt.Errorf("%sold_string must not be empty; use write_file to create or replace a whole file", label(i))
+		}
+		if e.OldString == e.NewString {
+			return "", nil, fmt.Errorf("%sold_string and new_string are identical", label(i))
+		}
 	}
 	p, err := f.Guard.Resolve(path)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	raw, err := os.ReadFile(p)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	text, bom := string(raw), ""
 	if strings.HasPrefix(text, "\ufeff") {
@@ -285,29 +326,42 @@ func (f *FS) EditFile(path, oldStr, newStr string, replaceAll bool) (string, err
 	crlf := isCRLF(text)
 	if crlf {
 		text = strings.ReplaceAll(text, "\r\n", "\n")
-		oldStr = strings.ReplaceAll(oldStr, "\r\n", "\n")
-		newStr = strings.ReplaceAll(newStr, "\r\n", "\n")
 	}
-
-	n := strings.Count(text, oldStr)
-	switch {
-	case n == 0:
-		return "", fmt.Errorf("old_string not found in %s (it must match exactly, including whitespace and indentation)", p)
-	case n > 1 && !replaceAll:
-		return "", fmt.Errorf("old_string occurs %d times in %s; include more surrounding context to make it unique, or set replace_all=true", n, p)
-	}
-	if replaceAll {
-		text = strings.ReplaceAll(text, oldStr, newStr)
-	} else {
-		text = strings.Replace(text, oldStr, newStr, 1)
+	counts := make([]int, len(edits))
+	for i, e := range edits {
+		oldStr, newStr := e.OldString, e.NewString
+		if crlf {
+			oldStr = strings.ReplaceAll(oldStr, "\r\n", "\n")
+			newStr = strings.ReplaceAll(newStr, "\r\n", "\n")
+		}
+		n := strings.Count(text, oldStr)
+		switch {
+		case n == 0:
+			return "", nil, fmt.Errorf("%sold_string not found in %s (it must match exactly, including whitespace and indentation)%s", label(i), p, nothingWritten(multi))
+		case n > 1 && !e.ReplaceAll:
+			return "", nil, fmt.Errorf("%sold_string occurs %d times in %s; include more surrounding context to make it unique, or set replace_all=true%s", label(i), n, p, nothingWritten(multi))
+		}
+		if e.ReplaceAll {
+			text = strings.ReplaceAll(text, oldStr, newStr)
+		} else {
+			text = strings.Replace(text, oldStr, newStr, 1)
+		}
+		counts[i] = n
 	}
 	if crlf {
 		text = strings.ReplaceAll(text, "\n", "\r\n")
 	}
 	if _, err := atomicWrite(p, []byte(bom+text)); err != nil {
-		return "", err
+		return "", nil, err
 	}
-	return fmt.Sprintf("replaced %d occurrence(s) in %s", n, p), nil
+	return p, counts, nil
+}
+
+func nothingWritten(multi bool) string {
+	if multi {
+		return "; no edit was written"
+	}
+	return ""
 }
 
 // isCRLF reports whether every newline in s is part of a CRLF pair.

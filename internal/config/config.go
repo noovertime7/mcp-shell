@@ -61,6 +61,18 @@ type Config struct {
 	// what it changed, connections, denials) in addition to the console.
 	// Empty means console only.
 	LogFile string `json:"log_file"`
+	// HistoryDir keeps every tool call, one JSON-lines file per day, for the
+	// operation_history tool. Defaults to <output_dir>/history (or
+	// <first root>/.tmp/mcp-shell/history); "-" disables it.
+	HistoryDir string `json:"history_dir"`
+	// HistoryDays is how many days of history are kept (default 30).
+	HistoryDays int `json:"history_days"`
+	// MaxCallWaitSec is the longest one tool call waits before it returns
+	// (default 45): run_command hands a command still running after this
+	// long to the background, and read_process_output waits at most this
+	// long. Keep it below the client's and any proxy's request timeout.
+	// A negative value turns the hand-over off.
+	MaxCallWaitSec int `json:"max_call_wait_sec"`
 }
 
 // Load reads path, applies defaults and the MCP_SHELL_TOKEN override, and validates.
@@ -113,6 +125,22 @@ func (c *Config) applyDefaults() {
 	}
 	if c.OutputDir == "" && len(c.Roots) > 0 {
 		c.OutputDir = filepath.Join(c.Roots[0], ".tmp", "mcp-shell")
+	}
+	if c.HistoryDir == "" && len(c.Roots) > 0 {
+		base := c.OutputDir
+		if base == "-" || base == "" {
+			base = filepath.Join(c.Roots[0], ".tmp", "mcp-shell")
+		}
+		c.HistoryDir = filepath.Join(base, "history")
+	}
+	if c.HistoryDir == "-" {
+		c.HistoryDir = ""
+	}
+	if c.HistoryDays <= 0 {
+		c.HistoryDays = 30
+	}
+	if c.MaxCallWaitSec == 0 {
+		c.MaxCallWaitSec = 45
 	}
 	if c.OutputDir == "-" {
 		c.OutputDir = ""

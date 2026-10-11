@@ -12,15 +12,17 @@ import (
 var readOnlyTools = map[string]bool{
 	"list_roots": true, "list_dir": true, "read_file": true, "glob": true, "grep": true,
 	"read_process_output": true, "list_processes": true,
+	"system_info": true, "get_env": true, "operation_history": true,
 }
 
 func toolLabel(name string) string {
 	labels := map[string]string{
 		"list_roots": "查看主机信息", "list_dir": "列出目录", "read_file": "读取文件",
-		"write_file": "写入文件", "edit_file": "修改文件", "delete_path": "删除路径",
+		"write_file": "写入文件", "edit_file": "修改文件", "multi_edit": "批量修改文件", "delete_path": "删除路径",
 		"move_path": "移动路径", "glob": "查找文件", "grep": "搜索文件内容",
 		"run_command": "执行命令", "start_process": "启动后台进程",
 		"read_process_output": "读取进程输出", "list_processes": "查看后台进程", "stop_process": "停止后台进程",
+		"system_info": "查看系统信息", "get_env": "查看环境变量", "operation_history": "查看操作历史",
 	}
 	if label, ok := labels[name]; ok {
 		return label
@@ -36,10 +38,12 @@ func toolLabel(name string) string {
 //	       + new: …
 func (s *Server) logCall(name string, in any, out string, err error, elapsed time.Duration) {
 	status := "成功"
-	if err != nil {
-		status = "失败"
-	}
-	if name == "run_command" && err == nil && !strings.HasPrefix(out, "exit_code: 0\n") {
+	switch st, _ := callStatus(name, out, err); st {
+	case "running":
+		status = "转入后台"
+	case "timeout":
+		status = "超时"
+	case "failed", "error":
 		status = "失败"
 	}
 	var b strings.Builder
@@ -53,6 +57,13 @@ func (s *Server) logCall(name string, in any, out string, err error, elapsed tim
 		}
 	case writeFileIn:
 		fmt.Fprintf(&b, "  %d 字节, %d 行", len(v.Content), countLines(v.Content))
+	case multiEditIn:
+		removed, added := 0, 0
+		for _, e := range v.Edits {
+			removed += countLines(e.OldString)
+			added += countLines(e.NewString)
+		}
+		fmt.Fprintf(&b, "  %d 处修改 删除=%d行 新增=%d行", len(v.Edits), removed, added)
 	}
 
 	if err != nil {

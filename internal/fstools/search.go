@@ -24,8 +24,9 @@ const (
 
 // Glob finds files under base whose slash-separated relative path matches
 // pattern. "**" matches any number of directories and {a,b} alternatives are
-// supported. Results are sorted newest first.
-func (f *FS) Glob(pattern, base string) (string, error) {
+// supported. Paths ignored by .gitignore are skipped unless includeIgnored.
+// Results are sorted newest first.
+func (f *FS) Glob(pattern, base string, includeIgnored bool) (string, error) {
 	if pattern == "" {
 		return "", errors.New("pattern is required")
 	}
@@ -47,6 +48,7 @@ func (f *FS) Glob(pattern, base string) (string, error) {
 		}
 	}
 	wantSkipped := mentionsSkipped(pattern)
+	ignore := newIgnoreWalker(root, includeIgnored)
 
 	var hits []string
 	scanned := 0
@@ -58,6 +60,12 @@ func (f *FS) Glob(pattern, base string) (string, error) {
 			if p != root && skipDirs[d.Name()] && !wantSkipped {
 				return filepath.SkipDir
 			}
+			if ignore.skip(p, true) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if ignore.skip(p, false) {
 			return nil
 		}
 		scanned++
@@ -84,7 +92,7 @@ func (f *FS) Glob(pattern, base string) (string, error) {
 		return "", err
 	}
 	if len(hits) == 0 {
-		return fmt.Sprintf("no files match %q under %s", pattern, root), nil
+		return fmt.Sprintf("no files match %q under %s%s", pattern, root, ignore.note()), nil
 	}
 	sortNewestFirst(hits)
 	var b strings.Builder
@@ -199,6 +207,8 @@ type GrepOptions struct {
 	Context    int
 	MaxResults int
 	FilesOnly  bool
+	// IncludeIgnored also searches paths ignored by .gitignore.
+	IncludeIgnored bool
 }
 
 // Grep searches files for a regular expression (Go RE2 syntax).
@@ -335,10 +345,12 @@ func (f *FS) Grep(o GrepOptions) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	var ignore *ignoreWalker
 	if !st.IsDir() {
 		globs = nil
 		err = searchFile(root)
 	} else {
+		ignore = newIgnoreWalker(root, o.IncludeIgnored)
 		err = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 			if err != nil {
 				return nil
@@ -347,6 +359,12 @@ func (f *FS) Grep(o GrepOptions) (string, error) {
 				if p != root && skipDirs[d.Name()] && !wantSkipped {
 					return filepath.SkipDir
 				}
+				if ignore.skip(p, true) {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if ignore.skip(p, false) {
 				return nil
 			}
 			return searchFile(p)
@@ -356,7 +374,7 @@ func (f *FS) Grep(o GrepOptions) (string, error) {
 		return "", err
 	}
 	if matches == 0 {
-		return fmt.Sprintf("no matches for %q under %s", o.Pattern, root), nil
+		return fmt.Sprintf("no matches for %q under %s%s", o.Pattern, root, ignore.note()), nil
 	}
 	if matches >= o.MaxResults {
 		fmt.Fprintf(&b, "… stopped at max_results=%d (%d files so far); narrow the search\n", o.MaxResults, files)

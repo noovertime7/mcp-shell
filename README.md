@@ -23,22 +23,28 @@
 
 | 工具 | 作用 |
 |---|---|
-| `list_roots` | 系统、允许的根目录、路径别名、默认 shell |
+| `list_roots` | 系统、允许的根目录、路径别名、默认 shell、临时文件目录（`scratch_dir`）、PATH 上有哪些开发工具 |
 | `list_dir` | 列目录（可多层），`.git`、`node_modules` 不展开 |
 | `read_file` | 带行号读取，支持 offset/limit，拒绝二进制 |
 | `write_file` | 新建或整体覆写（原子写入） |
 | `edit_file` | 精确字符串替换，默认要求唯一；保留 CRLF 和 BOM |
+| `multi_edit` | 同一文件多处替换一次完成，按顺序应用；任何一处不匹配则整个文件不写入 |
 | `delete_path` / `move_path` | 删除、移动/重命名；限制目录模式下保护根目录 |
-| `glob` / `grep` | 按 glob 找文件、按正则搜内容 |
-| `run_command` | 执行命令并等待，超时或客户端取消时杀掉整个进程树 |
-| `start_process` / `read_process_output` / `list_processes` / `stop_process` | 后台进程（dev server、watcher 等） |
+| `glob` / `grep` | 按 glob 找文件、按正则搜内容；默认跳过 `.gitignore` 忽略的文件（`dist/` 等构建产物），`include_ignored=true` 可搜 |
+| `run_command` | 执行命令并等待，超时或客户端取消时杀掉整个进程树；超过 `max_call_wait_sec` 仍在运行则转为后台进程，结果里给出续读方式 |
+| `start_process` / `read_process_output` / `list_processes` / `stop_process` | 后台进程（dev server、watcher 等）；`read_process_output` 支持 `until_exit`（等到退出）、`wait_for`（等到输出匹配正则）、`tail`（只看末尾） |
+| `system_info` | 系统版本、用户、CPU、内存、磁盘、开机时长、代码页、时区，以及 git/go/node/pnpm/python/java/docker 等工具的路径和版本 |
+| `get_env` | 查看环境变量：全部、按关键字过滤或按名称；PATH 类变量逐行列出并标出不存在的目录；Windows 上 `scope=user/machine` 查看注册表里的值；疑似密钥的值默认隐藏，`MCP_SHELL_TOKEN` 永不显示 |
+| `operation_history` | 查看历史工具调用（跨重启、跨会话持久保存）：按工具、关键字、失败、仅改动、时间过滤；传 `id` 查看单次调用的参数和输出开头 |
 
 ## 安全边界
 
 - CLI 默认限制目录模式：文件路径与命令 cwd 必须落在 `roots` 内，解析 symlink/junction 后检查。GUI 默认 `unrestricted: true`：开放系统当前用户可访问的文件路径，`roots` 仅决定默认目录；也可在设置中切换为限制目录模式。
 - `/mcp` 需要 `Authorization: Bearer <token>`；`allowed_ips` 限制来源 IP（支持 CIDR）。
 - `run_command` 可以执行任意命令，命令本身仍能访问 roots 之外的路径。原始 HTTP 服务只应在可信局域网或回环地址使用，不直接暴露到互联网；公网连接使用 GUI 管理的 HTTPS 隧道。详见 [使用说明](docs/desktop.md#隧道与服务生命周期)。
-- 每次工具调用和被拒绝的请求都写入 `audit_log`（JSON lines；`content`/`old_string`/`new_string` 只记长度）。
+- 每次工具调用和被拒绝的请求都写入 `audit_log`（JSON lines；`content`/`old_string`/`new_string` 只记长度，`env` 参数的值不记录）。
+- 命令不会继承 `MCP_SHELL_TOKEN`（GUI 用它把令牌交给服务），打印环境变量也看不到访问令牌。
+- 操作历史（`history_dir`）保存命令全文和改动类工具输出的开头，和日志一样只存在本机；不需要时设 `"history_dir": "-"` 关闭。
 
 ## 安装
 
@@ -89,6 +95,16 @@ New-NetFirewallRule -DisplayName "mcp-shell 8765" -Direction Inbound -Protocol T
 | `output_dir` | 被截断的命令输出、后台进程的完整日志（默认 `<第一个root>/.tmp/mcp-shell`，`-` 关闭），启动时清理 3 天前的日志 |
 | `audit_log` | 审计日志路径（JSON lines），空表示不记录 |
 | `log_file` | 操作日志路径（人可读，同时输出到控制台），空表示只输出到控制台 |
+| `history_dir` | 操作历史目录，每天一个 JSON lines 文件，供 `operation_history` 查询（默认 `<output_dir>/history`，`-` 关闭） |
+| `history_days` | 操作历史保留天数（默认 30） |
+| `max_call_wait_sec` | 单次工具调用最长等待（默认 45）：`run_command` 超过后转为后台进程继续运行（仍受超时限制），`read_process_output` 单次最多等这么久。应小于客户端和中间代理（如隧道）的请求超时；设为负数关闭转后台 |
+
+### Windows PowerShell 5.1 的默认行为
+
+- 文件类命令（`Get-Content`、`Set-Content`、`Add-Content`、`Out-File`、`>`、`Select-String`、`Import-Csv`、`Export-Csv`）默认使用 UTF-8，避免中文源码乱码；需要精确字节时用 `write_file`。
+- 原生命令往重定向的 stderr 写内容（git 的 CRLF 提示、`2>&1`、`2>$null`）不再被当成失败；cmdlet 出错仍返回非 0。
+- 退出码按有符号数显示（`-1` 而不是 `4294967295`）。
+- 每条命令都会合并注册表里的最新 PATH 和新增的环境变量，安装新工具后不用重启 mcp-shell。
 
 ### 操作日志
 
@@ -107,7 +123,18 @@ GUI、控制台和 `log_file` 实时记录中文操作开始、命令输出与�
 2026/10/11 21:31:00 [后台进程] p1 已退出 | 退出码=1 | 命令=pnpm dev
 ```
 
-读类工具（read_file、grep 等）只记参数，不记内容；改动类工具记结果，edit_file 还记旧/新片段。
+读类工具（read_file、grep 等）只记参数，不记内容；改动类工具记结果，edit_file 还记旧/新片段。命令超过 `max_call_wait_sec` 转为后台时记为“转入后台”。
+
+### 操作历史
+
+每次工具调用都追加到 `history_dir/<日期>.jsonl`：时间、工具、参数（文件内容只记长度）、结果（成功/失败/超时/转入后台、退出码）、耗时、客户端（来源 IP + User-Agent），改动类工具还保存输出开头。AI 通过 `operation_history` 查询，例如：
+
+```
+history: C:\Users\me\AppData\Local\mcp-shell\output\history (kept 30 days); calls 1-3 of 128 matching, newest first
+#128  15:28:31  run_command         FAILED exit=128   21.1s  git push origin master  (cwd E:\ws\platform)
+#127  15:27:02  multi_edit          ok                 9ms  E:\ws\web\src\views\a.vue  (2 edits)
+#126  15:26:40  edit_file           ok                 7ms  E:\ws\web\src\api\b.ts
+```
 
 ## 在 Claude Code 中接入
 

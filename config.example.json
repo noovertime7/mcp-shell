@@ -12,5 +12,8 @@
   "max_result_bytes": 60000,
   "output_dir": "",
   "audit_log": "mcp-shell-audit.log",
-  "log_file": "mcp-shell.log"
+  "log_file": "mcp-shell.log",
+  "history_dir": "",
+  "history_days": 30,
+  "max_call_wait_sec": 45
 }

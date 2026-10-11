@@ -8,6 +8,17 @@
 - 主要面向 Windows（PowerShell / cmd），也能在 macOS（zsh）和 Linux（bash）上运行。
 - MCP 协议层在 `internal/mcp`：Streamable HTTP、无会话、每个 POST 直接返回 `application/json`，实现 initialize、ping、tools/list、tools/call、notifications/cancelled。
 
+## Rust 桌面 GUI 与公网隧道
+
+新增原生 **Rust + egui** 主机服务控制台。宿主机与办公 Mac 各运行一份，虚拟机里的 Claude Code 通过 MCP 操作这两台电脑；GUI 管理服务、Cloudflare 隧道，并实时显示中文操作日志和命令输出。
+
+```powershell
+.\build-gui.ps1
+.\start-gui.ps1 -NoBuild
+```
+
+在宿主机启动 MCP 服务，复制局域网连接命令到虚拟机；在办公 Mac 启动服务与隧道，复制隧道连接命令到同一台虚拟机。分别命名 `host-pc` 与 `office-mac`，之后始终与虚拟机中的 Claude 对话即可。GUI 默认开放全部文件访问和命令工具，不做逐次确认；令牌与配置保存后可跨重启复用。Windows 产物在 `dist\mcp-shell-desktop`；Mac 使用 `bash build-gui-macos.sh` 构建 `.app`。见 [完整使用说明](docs/desktop.md)。
+
 ## 工具
 
 | 工具 | 作用 |
@@ -17,16 +28,16 @@
 | `read_file` | 带行号读取，支持 offset/limit，拒绝二进制 |
 | `write_file` | 新建或整体覆写（原子写入） |
 | `edit_file` | 精确字符串替换，默认要求唯一；保留 CRLF 和 BOM |
-| `delete_path` / `move_path` | 删除、移动/重命名；不能删除或移动根目录 |
+| `delete_path` / `move_path` | 删除、移动/重命名；限制目录模式下保护根目录 |
 | `glob` / `grep` | 按 glob 找文件、按正则搜内容 |
 | `run_command` | 执行命令并等待，超时或客户端取消时杀掉整个进程树 |
 | `start_process` / `read_process_output` / `list_processes` / `stop_process` | 后台进程（dev server、watcher 等） |
 
 ## 安全边界
 
-- 所有文件工具的路径和命令的 cwd 必须落在 `roots` 内；先解析 symlink 和 junction 再检查，拒绝 UNC、`\\?\` 和盘符相对路径。
+- CLI 默认限制目录模式：文件路径与命令 cwd 必须落在 `roots` 内，解析 symlink/junction 后检查。GUI 默认 `unrestricted: true`：开放系统当前用户可访问的文件路径，`roots` 仅决定默认目录；也可在设置中切换为限制目录模式。
 - `/mcp` 需要 `Authorization: Bearer <token>`；`allowed_ips` 限制来源 IP（支持 CIDR）。
-- `run_command` 可以执行任意命令，命令本身仍能访问 roots 之外的路径。token、IP 白名单和只监听局域网 IP 是主要防线。**只在可信局域网内使用，不要监听公网地址或 `0.0.0.0`，不要暴露到互联网**；token 通过明文 HTTP 传输。
+- `run_command` 可以执行任意命令，命令本身仍能访问 roots 之外的路径。原始 HTTP 服务只应在可信局域网或回环地址使用，不直接暴露到互联网；公网连接使用 GUI 管理的 HTTPS 隧道。详见 [使用说明](docs/desktop.md#隧道与服务生命周期)。
 - 每次工具调用和被拒绝的请求都写入 `audit_log`（JSON lines；`content`/`old_string`/`new_string` 只记长度）。
 
 ## 安装
@@ -68,6 +79,7 @@ New-NetFirewallRule -DisplayName "mcp-shell 8765" -Direction Inbound -Protocol T
 | `token` | 至少 16 个字符 |
 | `allowed_ips` | 允许的客户端 IP / CIDR，空表示不限制 |
 | `roots` | 允许访问的根目录，第一个是相对路径和默认 cwd 的基准 |
+| `unrestricted` | CLI 默认 false；GUI 默认 true，开放当前系统用户可访问的全部文件，roots 仅作为默认目录 |
 | `path_aliases` | 客户端路径前缀 → 本机路径，例如 `/mnt/hgfs/ws` → `D:\ws`，客户端用自己看到的路径也能访问 |
 | `default_shell` | Windows：`powershell`（默认）、`pwsh`、`cmd`；macOS 默认 `zsh`；Linux 默认 `bash` |
 | `command_timeout_sec` / `max_command_timeout_sec` | `run_command` 默认超时 / 允许的最大超时 |
@@ -80,17 +92,19 @@ New-NetFirewallRule -DisplayName "mcp-shell 8765" -Direction Inbound -Protocol T
 
 ### 操作日志
 
-控制台和 `log_file` 中每次工具调用一条，例如：
+GUI、控制台和 `log_file` 实时记录中文操作开始、命令输出与完成状态，例如：
 
 ```
-2026/10/10 21:30:01 [mcp] initialize from 192.168.1.20:51234: client=claude-code 2.x protocol=2025-06-18
-2026/10/10 21:30:05 [tool] edit_file           OK 8ms  path=D:\projects\web\src\a.ts  -1/+2 lines
-       => replaced 1 occurrence(s) in D:\projects\web\src\a.ts
-       - old: const a = 1
-       + new: const a = 2 const b = 3
-2026/10/10 21:30:09 [tool] run_command         OK 12.3s  cwd=api command="go test ./..."
+2026/10/11 21:30:01 [MCP连接] 客户端已连接 | 来源=192.168.1.20:51234 | 客户端=claude-code 2.x
+2026/10/11 21:30:05 [操作开始] 修改文件 (edit_file) 路径=D:\projects\web\src\a.ts
+2026/10/11 21:30:05 [操作完成] 成功 | 修改文件 (edit_file) | 耗时=8ms | 删除=1行 新增=2行
+       - 修改前: const a = 1
+       + 修改后: const a = 2 const b = 3
+2026/10/11 21:30:06 [操作开始] 执行命令 (run_command) 命令="go test ./..."
+2026/10/11 21:30:08 [实时输出] go test ./... · 标准输出 | ok package/example
+2026/10/11 21:30:09 [操作完成] 成功 | 执行命令 (run_command) | 耗时=3s
        => exit_code: 0
-2026/10/10 21:31:00 [proc] p1 (pnpm dev) exited: exited (exit_code 1, after 51s)
+2026/10/11 21:31:00 [后台进程] p1 已退出 | 退出码=1 | 命令=pnpm dev
 ```
 
 读类工具（read_file、grep 等）只记参数，不记内容；改动类工具记结果，edit_file 还记旧/新片段。
@@ -98,7 +112,7 @@ New-NetFirewallRule -DisplayName "mcp-shell 8765" -Direction Inbound -Protocol T
 ## 在 Claude Code 中接入
 
 ```bash
-curl -s http://<服务器IP>:8765/healthz        # 应返回 ok mcp-shell 0.0.1
+curl -s http://<服务器IP>:8765/healthz        # 应返回 ok mcp-shell 0.1.0
 claude mcp add --transport http shell http://<服务器IP>:8765/mcp \
   --header "Authorization: Bearer <token>" --scope user
 ```

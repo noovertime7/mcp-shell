@@ -97,6 +97,11 @@ func (s *Server) registerTools() {
 		func(ctx context.Context, _ listRootsIn) (string, error) {
 			host, _ := os.Hostname()
 			var b strings.Builder
+			if s.cfg.Unrestricted {
+				b.WriteString("access_mode: unrestricted (all paths accessible to the OS user; no host-side approval)\n")
+			} else {
+				b.WriteString("access_mode: restricted (configured roots only)\n")
+			}
 			fmt.Fprintf(&b, "host: %s (%s/%s)\ndefault_shell: %s\ncommand_timeout_sec: %d (max %d)\nroots:\n",
 				host, runtime.GOOS, runtime.GOARCH, s.cfg.DefaultShell, s.cfg.CommandTimeoutSec, s.cfg.MaxCommandTimeoutSec)
 			for _, r := range s.guard.Roots() {
@@ -131,12 +136,12 @@ func (s *Server) registerTools() {
 			return s.fs.EditFile(in.Path, in.OldString, in.NewString, in.ReplaceAll)
 		})
 
-	addTool(s, "delete_path", "Delete a file, an empty directory, or (with recursive=true) a directory tree. Root directories cannot be deleted.",
+	addTool(s, "delete_path", "Delete a file, an empty directory, or (with recursive=true) a directory tree. In restricted mode configured root directories cannot be deleted; unrestricted mode allows any path the OS user can remove.",
 		func(ctx context.Context, in deletePathIn) (string, error) {
 			return s.fs.DeletePath(in.Path, in.Recursive)
 		})
 
-	addTool(s, "move_path", "Move or rename a file or directory. Missing parent directories of dst are created.",
+	addTool(s, "move_path", "Move or rename a file or directory. Missing parent directories of dst are created. In restricted mode configured root directories cannot be moved; unrestricted mode allows any path the OS user can move.",
 		func(ctx context.Context, in movePathIn) (string, error) {
 			return s.fs.MovePath(in.Src, in.Dst, in.Overwrite)
 		})

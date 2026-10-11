@@ -25,6 +25,8 @@ func defaultShell() string {
 
 // Config is the on-disk configuration of mcp-shell.
 type Config struct {
+	// Unrestricted removes application-level file scope checks (OS permissions still apply).
+	Unrestricted bool `json:"unrestricted"`
 	// Listen is the TCP address to bind, e.g. "192.168.1.10:8765".
 	Listen string `json:"listen"`
 	// Token is the shared bearer token. MCP_SHELL_TOKEN overrides it.

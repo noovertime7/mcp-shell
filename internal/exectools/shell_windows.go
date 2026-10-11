@@ -39,6 +39,10 @@ func newShellCmd(ctx context.Context, shell, command string) (*exec.Cmd, func(),
 	default:
 		return nil, nil, fmt.Errorf("unknown shell %q (use powershell, pwsh or cmd)", shell)
 	}
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.HideWindow = true
 	cmd.Cancel = func() error {
 		if cmd.Process != nil {
 			killTree(cmd.Process.Pid)
@@ -51,6 +55,7 @@ func newShellCmd(ctx context.Context, shell, command string) (*exec.Cmd, func(),
 // killTree kills pid and all of its descendants.
 func killTree(pid int) {
 	kill := exec.Command("taskkill.exe", "/T", "/F", "/PID", strconv.Itoa(pid))
+	kill.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	_ = kill.Run()
 	if p, err := syscallOpenProcess(pid); err == nil {
 		_ = syscall.TerminateProcess(p, 1)

@@ -14,6 +14,20 @@ var readOnlyTools = map[string]bool{
 	"read_process_output": true, "list_processes": true,
 }
 
+func toolLabel(name string) string {
+	labels := map[string]string{
+		"list_roots": "查看主机信息", "list_dir": "列出目录", "read_file": "读取文件",
+		"write_file": "写入文件", "edit_file": "修改文件", "delete_path": "删除路径",
+		"move_path": "移动路径", "glob": "查找文件", "grep": "搜索文件内容",
+		"run_command": "执行命令", "start_process": "启动后台进程",
+		"read_process_output": "读取进程输出", "list_processes": "查看后台进程", "stop_process": "停止后台进程",
+	}
+	if label, ok := labels[name]; ok {
+		return label
+	}
+	return name
+}
+
 // logCall writes one human-readable operation-log entry per tool call:
 //
 //	[tool] edit_file  OK 12ms  path=web/src/a.ts  -3/+5 lines
@@ -21,25 +35,28 @@ var readOnlyTools = map[string]bool{
 //	       - old: …
 //	       + new: …
 func (s *Server) logCall(name string, in any, out string, err error, elapsed time.Duration) {
-	status := "OK"
+	status := "成功"
 	if err != nil {
-		status = "FAIL"
+		status = "失败"
+	}
+	if name == "run_command" && err == nil && !strings.HasPrefix(out, "exit_code: 0\n") {
+		status = "失败"
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "[tool] %-19s %s %s  %s", name, status, elapsed.Round(time.Millisecond), describeArgs(in))
+	fmt.Fprintf(&b, "[操作完成] %s | %s (%s) | 耗时=%s | %s", status, toolLabel(name), name, elapsed.Round(time.Millisecond), describeArgs(in))
 
 	switch v := in.(type) {
 	case editFileIn:
-		fmt.Fprintf(&b, "  -%d/+%d lines", countLines(v.OldString), countLines(v.NewString))
+		fmt.Fprintf(&b, "  删除=%d行 新增=%d行", countLines(v.OldString), countLines(v.NewString))
 		if v.ReplaceAll {
-			b.WriteString(" (replace_all)")
+			b.WriteString(" (全部替换)")
 		}
 	case writeFileIn:
-		fmt.Fprintf(&b, "  %d bytes, %d lines", len(v.Content), countLines(v.Content))
+		fmt.Fprintf(&b, "  %d 字节, %d 行", len(v.Content), countLines(v.Content))
 	}
 
 	if err != nil {
-		fmt.Fprintf(&b, "\n       => error: %s", oneLine(err.Error(), 500))
+		fmt.Fprintf(&b, "\n       => 错误详情: %s", oneLine(err.Error(), 500))
 	} else if !readOnlyTools[name] {
 		for i, line := range strings.SplitN(strings.TrimRight(out, "\n"), "\n", 4) {
 			if i == 3 {
@@ -49,7 +66,7 @@ func (s *Server) logCall(name string, in any, out string, err error, elapsed tim
 		}
 	}
 	if v, ok := in.(editFileIn); ok && err == nil {
-		fmt.Fprintf(&b, "\n       - old: %s\n       + new: %s", oneLine(v.OldString, 200), oneLine(v.NewString, 200))
+		fmt.Fprintf(&b, "\n       - 修改前: %s\n       + 修改后: %s", oneLine(v.OldString, 200), oneLine(v.NewString, 200))
 	}
 	log.Print(b.String())
 }
@@ -59,6 +76,7 @@ func (s *Server) logCall(name string, in any, out string, err error, elapsed tim
 func describeArgs(in any) string {
 	m := summarize(in)
 	keys := []string{"path", "src", "dst", "pattern", "glob", "id", "name", "cwd", "shell", "timeout_sec", "command"}
+	labels := map[string]string{"path": "路径", "src": "源路径", "dst": "目标路径", "pattern": "匹配规则", "glob": "文件过滤", "id": "进程ID", "name": "名称", "cwd": "工作目录", "shell": "终端", "timeout_sec": "超时秒数", "command": "命令"}
 	var parts []string
 	for _, k := range keys {
 		v, ok := m[k]
@@ -72,7 +90,7 @@ func describeArgs(in any) string {
 		if strings.ContainsAny(str, " \t\n\"") {
 			str = fmt.Sprintf("%q", oneLine(str, 300))
 		}
-		parts = append(parts, k+"="+str)
+		parts = append(parts, labels[k]+"="+str)
 	}
 	return strings.Join(parts, " ")
 }

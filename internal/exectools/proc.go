@@ -100,6 +100,8 @@ func (m *Manager) Start(command, cwd, shell, name string, env map[string]string)
 		tee := &teeWriter{w: ring, f: logFile}
 		cmd.Stdout, cmd.Stderr = tee, tee
 	}
+	var flush func()
+	cmd.Stdout, cmd.Stderr, flush = streamOutput(cmd.Stdout, cmd.Stderr, "后台任务 "+oneLine(command, 100))
 	if err := cmd.Start(); err != nil {
 		cancel()
 		cleanup()
@@ -127,6 +129,7 @@ func (m *Manager) Start(command, cwd, shell, name string, env map[string]string)
 
 	go func() {
 		err := cmd.Wait()
+		flush()
 		code := -1
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
@@ -141,7 +144,7 @@ func (m *Manager) Start(command, cwd, shell, name string, env map[string]string)
 		p.mu.Unlock()
 		close(p.done)
 		cancel()
-		log.Printf("[proc] %s (%s) exited: %s", p.ID, oneLine(p.Command, 100), p.status())
+		log.Printf("[后台进程] %s 已退出 | 退出码=%d | 命令=%s", p.ID, code, oneLine(p.Command, 100))
 	}()
 	return p, nil
 }

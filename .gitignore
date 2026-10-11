@@ -4,3 +4,4 @@ dist/
 *.exe
 *.log
 .tmp/
+gui/target/

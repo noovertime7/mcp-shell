@@ -156,6 +156,9 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		cmd.Stdout = &teeWriter{w: stdout, f: logFile}
 		cmd.Stderr = &teeWriter{w: stderr, f: logFile}
 	}
+	var flush func()
+	cmd.Stdout, cmd.Stderr, flush = streamOutput(cmd.Stdout, cmd.Stderr, oneLine(req.Command, 100))
+	defer flush()
 
 	start := time.Now()
 	if err := cmd.Start(); err != nil {

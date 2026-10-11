@@ -25,7 +25,7 @@ import (
 )
 
 // Version is reported to MCP clients.
-const Version = "0.0.1"
+const Version = "0.1.0"
 
 // Server is the mcp-shell server.
 type Server struct {
@@ -47,6 +47,7 @@ func New(cfg *config.Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	guard.SetUnrestricted(cfg.Unrestricted)
 	s := &Server{
 		cfg:   cfg,
 		guard: guard,
@@ -110,14 +111,19 @@ func (s *Server) Close() {
 }
 
 func (s *Server) instructions() string {
+	scope := "Restricted mode: every file path and command working directory must be inside a configured root."
+	if s.cfg.Unrestricted {
+		scope = "\nUNRESTRICTED MODE: all paths accessible to the service's OS user are permitted, including outside the configured roots. Roots only select the default working directory. All tools execute immediately without host-side approval.\n"
+	}
 	return fmt.Sprintf(`mcp-shell gives you access to a %s host machine.
-- Allowed roots: %s. Every path must be inside a root. Use absolute host paths (e.g. %s\...) or paths relative to the first root.%s
+- %s
+- Configured directories: %s. Relative paths use the first directory. Prefer absolute paths on this host.%s
 - Read before you edit: use read_file, then edit_file with an exact, unique old_string. Use write_file only for new files or full rewrites.
 - run_command runs one command and waits (default shell: %s, default timeout %ds). Use it for builds, tests, git and package managers.
 - For dev servers or anything that keeps running, use start_process, then read_process_output (with wait_ms) and stop_process when done.
 - Commands are non-interactive: stdin is empty, so pass flags like -y/--yes instead of waiting for prompts.
 - Long output is cut in the middle; the full log is kept on disk (full_output: in the result) and can be read with read_file or grep.`,
-		runtime.GOOS, strings.Join(s.guard.Roots(), ", "), s.guard.Roots()[0], s.aliasHint(), s.cfg.DefaultShell, s.cfg.CommandTimeoutSec)
+		runtime.GOOS, scope, strings.Join(s.guard.Roots(), ", "), s.aliasHint(), s.cfg.DefaultShell, s.cfg.CommandTimeoutSec)
 }
 
 func (s *Server) aliasHint() string {
@@ -205,7 +211,14 @@ func (s *Server) auditEvent(ev map[string]any) {
 		return
 	}
 	if ev["event"] == "denied" {
-		log.Printf("denied request from %v: %v", ev["ip"], ev["reason"])
+		reason := ev["reason"]
+		if reason == "bad token" {
+			reason = "访问令牌不匹配"
+		}
+		if reason == "ip not allowed" {
+			reason = "来源 IP 不在允许范围"
+		}
+		log.Printf("[认证] 拒绝连接 来源=%v 原因=%v", ev["ip"], reason)
 	}
 	if s.audit == nil {
 		return
@@ -248,6 +261,7 @@ func summarize(in any) map[string]any {
 func addTool[In any](s *Server, name, desc string, fn func(ctx context.Context, in In) (string, error)) {
 	s.mcp.AddTool(mcp.Typed(name, desc, func(ctx context.Context, in In) (string, error) {
 		start := time.Now()
+		log.Printf("[操作开始] %s (%s) %s", toolLabel(name), name, describeArgs(in))
 		out, err := fn(ctx, in)
 		elapsed := time.Since(start)
 		s.logCall(name, in, out, err, elapsed)

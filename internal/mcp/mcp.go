@@ -201,7 +201,7 @@ func (s *Server) notify(req request) {
 			cancel := s.inflight[string(p.RequestID)]
 			s.mu.Unlock()
 			if cancel != nil {
-				log.Printf("[mcp] client cancelled request %s %s", p.RequestID, p.Reason)
+				log.Printf("[MCP连接] 客户端取消请求 %s 原因=%s", p.RequestID, p.Reason)
 				cancel()
 			}
 		}
@@ -224,7 +224,7 @@ func (s *Server) call(r *http.Request, req request) (any, *rpcError) {
 		if knownProtocolVersions[p.ProtocolVersion] {
 			version = p.ProtocolVersion
 		}
-		log.Printf("[mcp] initialize from %s: client=%s %s protocol=%s", r.RemoteAddr, p.ClientInfo.Name, p.ClientInfo.Version, version)
+		log.Printf("[MCP连接] 客户端已连接 | 来源=%s | 客户端=%s %s | 协议=%s", r.RemoteAddr, p.ClientInfo.Name, p.ClientInfo.Version, version)
 		res := map[string]any{
 			"protocolVersion": version,
 			"capabilities":    map[string]any{"tools": map[string]any{"listChanged": false}},

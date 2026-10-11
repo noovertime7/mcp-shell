@@ -16,9 +16,14 @@ const isWindows = runtime.GOOS == "windows"
 
 // Guard resolves client paths and rejects anything outside its roots.
 type Guard struct {
-	roots   []string // real (symlink-free) absolute paths
-	aliases []alias  // longest prefix first
+	unrestricted bool
+	roots        []string // real (symlink-free) absolute paths
+	aliases      []alias  // longest prefix first
 }
+
+// SetUnrestricted permits all filesystem paths accessible to the service user.
+// This is explicitly enabled by the desktop host, not by default for CLI configs.
+func (g *Guard) SetUnrestricted(enabled bool) { g.unrestricted = enabled }
 
 type alias struct {
 	from string // client prefix, forward slashes, no trailing slash
@@ -67,6 +72,9 @@ func (g *Guard) Roots() []string {
 
 // IsRoot reports whether p (already resolved) is one of the roots itself.
 func (g *Guard) IsRoot(p string) bool {
+	if g.unrestricted {
+		return false
+	}
 	for _, r := range g.roots {
 		if samePath(r, p) {
 			return true
@@ -86,7 +94,7 @@ func (g *Guard) Resolve(p string) (string, error) {
 	orig := p
 	p = g.applyAlias(p)
 
-	if strings.HasPrefix(p, `\\`) || (isWindows && strings.HasPrefix(p, "//")) {
+	if !g.unrestricted && (strings.HasPrefix(p, `\\`) || (isWindows && strings.HasPrefix(p, "//"))) {
 		return "", fmt.Errorf("UNC and device paths are not allowed: %s", orig)
 	}
 	if isWindows {
@@ -106,6 +114,9 @@ func (g *Guard) Resolve(p string) (string, error) {
 	real, err := resolveExisting(p)
 	if err != nil {
 		return "", fmt.Errorf("resolve %s: %w", orig, err)
+	}
+	if g.unrestricted {
+		return real, nil
 	}
 	for _, r := range g.roots {
 		if within(r, real) {

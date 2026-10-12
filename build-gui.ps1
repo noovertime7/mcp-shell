@@ -14,14 +14,8 @@ try {
     Copy-Item -LiteralPath "gui\target\$profile\mcp-shell-gui.exe" -Destination $out
     Copy-Item -LiteralPath 'docs\desktop.md' -Destination (Join-Path $out '使用说明.md')
     Copy-Item -LiteralPath 'LICENSE' -Destination $out
-    if (Test-Path -LiteralPath 'bin\cloudflared.exe') {
-        Copy-Item -LiteralPath 'bin\cloudflared.exe' -Destination $out
-    }
     $zip = Join-Path $PSScriptRoot 'dist\mcp-shell-desktop-windows-x64.zip'
-    Compress-Archive -Path (Join-Path $out '*') -DestinationPath $zip -Force
+    Compress-Archive -LiteralPath @((Join-Path $out 'mcp-shell.exe'), (Join-Path $out 'mcp-shell-gui.exe'), (Join-Path $out '使用说明.md'), (Join-Path $out 'LICENSE')) -DestinationPath $zip -Force
     Write-Host "Desktop build ready: $out"
     Write-Host "Portable package: $zip"
-    if (-not (Test-Path -LiteralPath (Join-Path $out 'cloudflared.exe'))) {
-        Write-Host 'Install cloudflared or place cloudflared.exe next to the desktop executable to enable tunnels.'
-    }
 } finally { Pop-Location }

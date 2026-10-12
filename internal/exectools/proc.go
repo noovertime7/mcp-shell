@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os/exec"
 	"regexp"
@@ -54,6 +55,9 @@ type Proc struct {
 	exitCode int
 	timedOut bool
 	ended    time.Time
+
+	stdin   io.WriteCloser
+	stdinMu sync.Mutex
 }
 
 // NewManager returns an empty process manager.
@@ -130,7 +134,14 @@ func (m *Manager) Start(command, cwd, shell, name string, env map[string]string)
 	}
 	var flush func()
 	cmd.Stdout, cmd.Stderr, flush = streamOutput(cmd.Stdout, cmd.Stderr, "后台任务 "+oneLine(command, 100))
+	var stdinPipe io.WriteCloser
+	if pipe, err := cmd.StdinPipe(); err == nil {
+		stdinPipe = pipe
+	}
 	if err := cmd.Start(); err != nil {
+		if stdinPipe != nil {
+			_ = stdinPipe.Close()
+		}
 		cancel()
 		cleanup()
 		logFile.discard()
@@ -148,6 +159,7 @@ func (m *Manager) Start(command, cwd, shell, name string, env map[string]string)
 		log:     ring,
 		cancel:  cancel,
 		done:    make(chan struct{}),
+		stdin:   stdinPipe,
 	}
 	if !m.register(p) {
 		cancel()
@@ -201,6 +213,12 @@ func (m *Manager) adopt(a adoptedRun) *Proc {
 // finish records how the process ended and releases what it held.
 func (p *Proc) finish(cmd *exec.Cmd, waitErr error, ctx context.Context, flush func(), logFile *outputLog, cleanup func()) {
 	flush()
+	p.stdinMu.Lock()
+	if p.stdin != nil {
+		_ = p.stdin.Close()
+		p.stdin = nil
+	}
+	p.stdinMu.Unlock()
 	code := exitCodeOf(cmd, waitErr)
 	timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
 	logFile.close()
@@ -427,4 +445,78 @@ func oneLine(s string, max int) string {
 		return string(r[:max]) + "…"
 	}
 	return s
+}
+
+// WriteInput sends input to the process's standard input.
+func (p *Proc) WriteInput(input string, closeStdin bool) error {
+	if !p.running() {
+		return fmt.Errorf("process %s is not running", p.ID)
+	}
+	p.stdinMu.Lock()
+	defer p.stdinMu.Unlock()
+	if p.stdin == nil {
+		return fmt.Errorf("process %s stdin is not available or already closed", p.ID)
+	}
+	if _, err := io.WriteString(p.stdin, input); err != nil {
+		return fmt.Errorf("write stdin to %s: %w", p.ID, err)
+	}
+	if closeStdin {
+		_ = p.stdin.Close()
+		p.stdin = nil
+	}
+	return nil
+}
+
+// WriteInput sends input to a background process's stdin.
+func (m *Manager) WriteInput(id, input string, closeStdin bool) error {
+	p, err := m.get(id)
+	if err != nil {
+		return err
+	}
+	return p.WriteInput(input, closeStdin)
+}
+
+// ProcInfo is structured data about a tracked background process.
+type ProcInfo struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Command string `json:"command"`
+	Shell   string `json:"shell"`
+	Cwd     string `json:"cwd"`
+	PID     int    `json:"pid"`
+	Started string `json:"started"`
+	Running bool   `json:"running"`
+	Status  string `json:"status"`
+	LogFile string `json:"log_file,omitempty"`
+}
+
+// ListInfo returns structured info of all tracked background processes.
+func (m *Manager) ListInfo() []ProcInfo {
+	m.mu.Lock()
+	procs := make([]*Proc, 0, len(m.procs))
+	for _, p := range m.procs {
+		procs = append(procs, p)
+	}
+	m.mu.Unlock()
+	sort.Slice(procs, func(i, j int) bool { return procs[i].Started.Before(procs[j].Started) })
+	infos := make([]ProcInfo, 0, len(procs))
+	for _, p := range procs {
+		name := p.Name
+		if name == "" {
+			name = "-"
+		}
+		infos = append(infos, ProcInfo{
+			ID:      p.ID,
+			Name:    name,
+			Command: p.Command,
+			Shell:   p.Shell,
+			Cwd:     p.Cwd,
+			PID:     p.PID,
+			Started: p.Started.Format("2006-01-02 15:04:05"),
+			Running: p.running(),
+			Status:  p.status(),
+			LogFile: p.LogFile,
+		})
+	}
+	return infos
 }

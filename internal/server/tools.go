@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"runtime"
@@ -103,7 +104,9 @@ type procIDIn struct {
 	ID string `json:"id" jsonschema:"process id returned by start_process"`
 }
 
-type listProcessesIn struct{}
+type listProcessesIn struct {
+	JSON bool `json:"json,omitempty" jsonschema:"return structured JSON array of processes"`
+}
 
 type systemInfoIn struct{}
 
@@ -234,13 +237,71 @@ func (s *Server) registerTools() {
 		})
 
 	addTool(s, "list_processes", "List background processes started with start_process.",
-		func(ctx context.Context, _ listProcessesIn) (string, error) {
+		func(ctx context.Context, in listProcessesIn) (string, error) {
+			if in.JSON {
+				data, err := json.MarshalIndent(s.procs.ListInfo(), "", "  ")
+				if err != nil {
+					return "", err
+				}
+				return string(data), nil
+			}
 			return s.procs.List(), nil
 		})
 
 	addTool(s, "stop_process", "Kill a background process and all its children, and forget it.",
 		func(ctx context.Context, in procIDIn) (string, error) {
 			return s.procs.Stop(in.ID)
+		})
+
+	addTool(s, "write_process_input", "Write text to the standard input (stdin) of a running background process.",
+		func(ctx context.Context, in writeProcessIn) (string, error) {
+			input := in.Input
+			if !in.Raw && !strings.HasSuffix(input, "\n") {
+				input += "\n"
+			}
+			if err := s.procs.WriteInput(in.ID, input, in.CloseStdin); err != nil {
+				return "", err
+			}
+			msg := fmt.Sprintf("wrote %d bytes to %s stdin", len(input), in.ID)
+			if in.CloseStdin {
+				msg += " and closed stdin"
+			}
+			return msg, nil
+		})
+
+	addTool(s, "notify_user", "Display a system notification popup on the host screen (e.g. when long task/build finishes).",
+		func(ctx context.Context, in notifyUserIn) (string, error) {
+			return notifyUser(in.Title, in.Message, in.Sound)
+		})
+
+	addTool(s, "get_clipboard", "Get the current text content from the host system clipboard.",
+		func(ctx context.Context, _ struct{}) (string, error) {
+			return getClipboard()
+		})
+
+	addTool(s, "set_clipboard", "Set the host system clipboard text.",
+		func(ctx context.Context, in setClipboardIn) (string, error) {
+			return setClipboard(in.Text)
+		})
+
+	addTool(s, "capture_screen", "Capture a screenshot on macOS (quietly without sound). Saves to scratch dir if path is empty.",
+		func(ctx context.Context, in captureScreenIn) (string, error) {
+			return s.captureScreen(in)
+		})
+
+	addTool(s, "open_target", "Open a URL in the host browser, or open a file/directory in Finder/Explorer/default application.",
+		func(ctx context.Context, in openTargetIn) (string, error) {
+			return s.openTarget(in)
+		})
+
+	addTool(s, "inspect_port", "Check which process is listening on a TCP port on the host, with optional kill to terminate it.",
+		func(ctx context.Context, in inspectPortIn) (string, error) {
+			return inspectPort(in.Port, in.Kill)
+		})
+
+	addTool(s, "http_request", "Send an HTTP request from the host machine (e.g. to test local dev servers or APIs running on localhost).",
+		func(ctx context.Context, in httpRequestIn) (string, error) {
+			return s.httpRequest(ctx, in)
 		})
 
 	addTool(s, "system_info", "Describe the host: OS version, user, CPUs, memory, disks, uptime, code page and time zone, and the developer tools on PATH with their versions (git, go, node, pnpm, python, java, docker, ...).",

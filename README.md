@@ -8,16 +8,16 @@
 - 主要面向 Windows（PowerShell / cmd），也能在 macOS（zsh）和 Linux（bash）上运行。
 - MCP 协议层在 `internal/mcp`：Streamable HTTP、无会话、每个 POST 直接返回 `application/json`，实现 initialize、ping、tools/list、tools/call、notifications/cancelled。
 
-## Rust 桌面 GUI 与公网隧道
+## Rust 桌面 GUI
 
-新增原生 **Rust + egui** 主机服务控制台。宿主机与办公 Mac 各运行一份，虚拟机里的 Claude Code 通过 MCP 操作这两台电脑；GUI 管理服务、Cloudflare 隧道，并实时显示中文操作日志和命令输出。
+新增原生 **Rust + egui** 主机服务控制台。宿主机与办公 Mac 各运行一份，虚拟机里的 Claude Code 通过 MCP 操作这两台电脑；GUI 管理服务启停与客户端连接配置，并实时显示中文操作日志和命令输出，外观跟随系统明暗模式。
 
 ```powershell
 .\build-gui.ps1
 .\start-gui.ps1 -NoBuild
 ```
 
-在宿主机启动 MCP 服务，复制局域网连接命令到虚拟机；在办公 Mac 启动服务与隧道，复制隧道连接命令到同一台虚拟机。分别命名 `host-pc` 与 `office-mac`，之后始终与虚拟机中的 Claude 对话即可。GUI 默认开放全部文件访问和命令工具，不做逐次确认；令牌与配置保存后可跨重启复用。Windows 产物在 `dist\mcp-shell-desktop`；Mac 使用 `bash build-gui-macos.sh` 构建 `.app`。见 [完整使用说明](docs/desktop.md)。
+在宿主机或办公 Mac 启动 MCP 服务，在「连接配置」中选择本机连接或局域网 / 虚拟机，再复制接入命令到 Claude 所在电脑。支持 macOS 顶部菜单栏状态常驻、关闭窗口隐藏至后台运行、Caffeinate 保持唤醒（防休眠断网）、网卡智能识别（Tailscale / 局域网）与一键切换监听，以及可视化「运行中进程」管理面板（实时查看、向 stdin 发送输入、一键终止）。Mac 默认仅监听本机，跨电脑连接时可一键切换为局域网监听。分别命名 `host-pc` 与 `office-mac`，之后始终与虚拟机中的 Claude 对话即可。GUI 默认开放全部文件访问和命令工具，不做逐次确认；令牌与配置保存后可跨重启复用。Windows 产物在 `dist\mcp-shell-desktop`；Mac 使用 `bash build-gui-macos.sh` 构建 `.app`。见 [完整使用说明](docs/desktop.md)。
 
 ## 工具
 
@@ -33,6 +33,13 @@
 | `glob` / `grep` | 按 glob 找文件、按正则搜内容；默认跳过 `.gitignore` 忽略的文件（`dist/` 等构建产物），`include_ignored=true` 可搜 |
 | `run_command` | 执行命令并等待，超时或客户端取消时杀掉整个进程树；超过 `max_call_wait_sec` 仍在运行则转为后台进程，结果里给出续读方式 |
 | `start_process` / `read_process_output` / `list_processes` / `stop_process` | 后台进程（dev server、watcher 等）；`read_process_output` 支持 `until_exit`（等到退出）、`wait_for`（等到输出匹配正则）、`tail`（只看末尾） |
+| `write_process_input` | 向运行中的后台进程标准输入（stdin）写入文本/按键，可选择关闭 stdin |
+| `notify_user` | 在主机屏幕弹出原生系统通知（如构建或长任务完成时提醒），支持标题、内容与提示音 |
+| `get_clipboard` / `set_clipboard` | 读取与写入主机系统剪贴板，支持跨电脑传递代码、Token 或错误日志 |
+| `capture_screen` | macOS 静音截屏，可保存至临时目录或指定路径，供多模态模型查看屏幕 UI 与报错 |
+| `open_target` | 在主机默认浏览器打开 URL（如本地服务），或在访达/资源管理器打开文件与目录 |
+| `inspect_port` | 检查主机 TCP 端口占用（显示监听进程 PID 与名称），支持传入 `kill: true` 释放端口 |
+| `http_request` | 由主机发起 HTTP/HTTPS 请求，用于本地回环接口联调与服务健康检查 |
 | `system_info` | 系统版本、用户、CPU、内存、磁盘、开机时长、代码页、时区，以及 git/go/node/pnpm/python/java/docker 等工具的路径和版本 |
 | `get_env` | 查看环境变量：全部、按关键字过滤或按名称；PATH 类变量逐行列出并标出不存在的目录；Windows 上 `scope=user/machine` 查看注册表里的值；疑似密钥的值默认隐藏，`MCP_SHELL_TOKEN` 永不显示 |
 | `operation_history` | 查看历史工具调用（跨重启、跨会话持久保存）：按工具、关键字、失败、仅改动、时间过滤；传 `id` 查看单次调用的参数和输出开头 |
@@ -41,7 +48,7 @@
 
 - CLI 默认限制目录模式：文件路径与命令 cwd 必须落在 `roots` 内，解析 symlink/junction 后检查。GUI 默认 `unrestricted: true`：开放系统当前用户可访问的文件路径，`roots` 仅决定默认目录；也可在设置中切换为限制目录模式。
 - `/mcp` 需要 `Authorization: Bearer <token>`；`allowed_ips` 限制来源 IP（支持 CIDR）。
-- `run_command` 可以执行任意命令，命令本身仍能访问 roots 之外的路径。原始 HTTP 服务只应在可信局域网或回环地址使用，不直接暴露到互联网；公网连接使用 GUI 管理的 HTTPS 隧道。详见 [使用说明](docs/desktop.md#隧道与服务生命周期)。
+- `run_command` 可以执行任意命令，命令本身仍能访问 roots 之外的路径。HTTP 服务只应在可信局域网或回环地址使用，不直接暴露到互联网。程序不提供内置公网穿透；跨网络使用需要自行建立可信网络连接。详见 [使用说明](docs/desktop.md#连接与服务生命周期)。
 - 每次工具调用和被拒绝的请求都写入 `audit_log`（JSON lines；`content`/`old_string`/`new_string` 只记长度，`env` 参数的值不记录）。
 - 命令不会继承 `MCP_SHELL_TOKEN`（GUI 用它把令牌交给服务），打印环境变量也看不到访问令牌。
 - 操作历史（`history_dir`）保存命令全文和改动类工具输出的开头，和日志一样只存在本机；不需要时设 `"history_dir": "-"` 关闭。
@@ -97,7 +104,7 @@ New-NetFirewallRule -DisplayName "mcp-shell 8765" -Direction Inbound -Protocol T
 | `log_file` | 操作日志路径（人可读，同时输出到控制台），空表示只输出到控制台 |
 | `history_dir` | 操作历史目录，每天一个 JSON lines 文件，供 `operation_history` 查询（默认 `<output_dir>/history`，`-` 关闭） |
 | `history_days` | 操作历史保留天数（默认 30） |
-| `max_call_wait_sec` | 单次工具调用最长等待（默认 45）：`run_command` 超过后转为后台进程继续运行（仍受超时限制），`read_process_output` 单次最多等这么久。应小于客户端和中间代理（如隧道）的请求超时；设为负数关闭转后台 |
+| `max_call_wait_sec` | 单次工具调用最长等待（默认 45）：`run_command` 超过后转为后台进程继续运行（仍受超时限制），`read_process_output` 单次最多等这么久。应小于客户端和中间代理的请求超时；设为负数关闭转后台 |
 
 ### Windows PowerShell 5.1 的默认行为
 

@@ -22,14 +22,6 @@ export MACOSX_DEPLOYMENT_TARGET=12.0
 GOOS=darwin GOARCH="$go_arch" CGO_ENABLED=0 go build -trimpath -o "$app/Contents/MacOS/mcp-shell" ./cmd/mcp-shell
 cargo build --locked --release --manifest-path gui/Cargo.toml --target "$rust_target"
 cp "gui/target/$rust_target/release/mcp-shell-gui" "$app/Contents/MacOS/"
-if command -v cloudflared >/dev/null; then
-  cp "$(command -v cloudflared)" "$app/Contents/MacOS/cloudflared"
-elif [[ -x bin/cloudflared ]]; then
-  cp bin/cloudflared "$app/Contents/MacOS/cloudflared"
-else
-  echo 'cloudflared is not installed. Run brew install cloudflared to bundle it.' >&2
-  exit 1
-fi
 cat > "$app/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

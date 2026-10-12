@@ -59,6 +59,13 @@ func New(roots []string, aliases map[string]string) (*Guard, error) {
 		if from == "" || to == "" {
 			continue
 		}
+		if abs, err := filepath.Abs(to); err == nil {
+			if real, err := realPath(abs); err == nil {
+				to = real
+			} else {
+				to = abs
+			}
+		}
 		g.aliases = append(g.aliases, alias{from: from, to: to})
 	}
 	sort.Slice(g.aliases, func(i, j int) bool { return len(g.aliases[i].from) > len(g.aliases[j].from) })

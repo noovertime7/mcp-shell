@@ -1,8 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod caffeinate;
 mod client;
+mod dashboard;
 mod host;
+mod tray;
 
 fn main() -> eframe::Result {
     eframe::run_native(

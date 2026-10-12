@@ -73,8 +73,8 @@ impl Remote {
         if !status.is_success() {
             return Err(match status.as_u16() {
                 401 => "认证失败：请检查远程访问令牌".into(),
-                403 => "访问被拒绝：请检查服务端 IP 白名单或隧道访问策略".into(),
-                _ => format!("服务返回 HTTP {status}；请检查隧道状态"),
+                403 => "访问被拒绝：请检查服务端 IP 白名单".into(),
+                _ => format!("服务返回 HTTP {status}；请检查服务状态"),
             });
         }
         let mut bytes = Vec::new();
@@ -164,10 +164,7 @@ mod tests {
         ] {
             assert!(endpoint(bad).is_err(), "{bad}");
         }
-        assert_eq!(
-            endpoint("https://demo.trycloudflare.com").unwrap().path(),
-            "/mcp"
-        );
+        assert_eq!(endpoint("https://example.com").unwrap().path(), "/mcp");
         assert!(endpoint("http://127.0.0.1:8765").is_ok());
         assert!(endpoint("http://[::1]:8765/mcp").is_ok());
     }

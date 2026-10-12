@@ -4,15 +4,17 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.88"
 license = "MIT"
-description = "Native desktop controller and tunnel manager for mcp-shell"
+description = "Native desktop service controller for mcp-shell"
 
 [dependencies]
 eframe = { version = "0.31.1", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
 rand = "0.8.5"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"
 if-addrs = "0.13"
+tray-icon = "0.24.2"
 
 [features]
 screenshot = ["eframe/__screenshot"]

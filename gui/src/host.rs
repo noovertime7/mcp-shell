@@ -14,7 +14,6 @@ use tempfile::TempDir;
 #[derive(Clone)]
 pub struct HostConfig {
     pub server: String,
-    pub cloudflared: String,
     pub roots: String,
     pub port: u16,
     pub token: String,
@@ -56,7 +55,6 @@ impl HostConfig {
     pub fn defaults() -> Self {
         Self {
             server: binary("mcp-shell"),
-            cloudflared: binary("cloudflared"),
             roots: std::env::var(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
                 .unwrap_or_else(|_| ".".into()),
             port: 18765,
@@ -80,7 +78,6 @@ impl HostConfig {
                     .map_err(|e| e.to_string())?;
             for (key, target) in [
                 ("server", &mut config.server),
-                ("cloudflared", &mut config.cloudflared),
                 ("roots", &mut config.roots),
                 ("bind", &mut config.bind),
                 ("token", &mut config.token),
@@ -106,7 +103,7 @@ impl HostConfig {
         let state = ensure_state_dir()?;
         // NamedTempFile uses 0600 on Unix. Windows inherits the user profile ACL.
         let mut file = tempfile::NamedTempFile::new_in(&state).map_err(|e| e.to_string())?;
-        let value = json!({"server":self.server,"cloudflared":self.cloudflared,"roots":self.roots,
+        let value = json!({"server":self.server,"roots":self.roots,
             "port":self.port,"token":self.token,"bind":self.bind,"unrestricted":self.unrestricted});
         file.write_all(&serde_json::to_vec_pretty(&value).unwrap())
             .map_err(|e| e.to_string())?;
@@ -119,13 +116,9 @@ impl HostConfig {
 pub enum Action {
     Start(HostConfig),
     Stop,
-    TunnelStart,
-    TunnelStop,
 }
 pub enum Event {
     Running(bool),
-    Tunnel(bool),
-    Url(String),
     Error(String),
 }
 
@@ -176,7 +169,7 @@ fn spawn(
     {
         let inherited = std::env::var("PATH").unwrap_or_default();
         // Finder-launched apps can inherit an empty or minimal PATH. Keep the
-        // Homebrew locations used by cloudflared, but always retain macOS's
+        // Homebrew locations used by development tools, but always retain macOS's
         // system directories so zsh and standard tools resolve reliably.
         let mut path =
             String::from("/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin");
@@ -203,57 +196,8 @@ fn spawn(
     Ok(child)
 }
 
-pub fn tunnel_url(line: &str) -> Option<String> {
-    for word in line.split_whitespace() {
-        let candidate = word.trim_matches(|c: char| matches!(c, '|' | '"' | '\'' | ','));
-        if let Ok(url) = reqwest::Url::parse(candidate) {
-            let host = url.host_str()?;
-            let label = host.strip_suffix(".trycloudflare.com")?;
-            if url.scheme() == "https"
-                && !label.is_empty()
-                && !label.contains('.')
-                && url.username().is_empty()
-                && url.password().is_none()
-                && url.port().is_none()
-                && url.query().is_none()
-                && url.fragment().is_none()
-                && url.path() == "/"
-            {
-                return Some(format!("https://{host}/mcp"));
-            }
-        }
-    }
-    None
-}
-
-pub fn chinese_log(line: &str) -> String {
-    if line.starts_with("[cloudflared]") {
-        let description = if tunnel_url(line).is_some() {
-            "公网地址已分配"
-        } else if line.contains("Registered tunnel connection") {
-            "隧道连接已建立"
-        } else if line.contains("Retrying connection") {
-            "正在重连隧道"
-        } else if line.contains("ERR") {
-            "隧道错误"
-        } else if line.contains("WRN") {
-            "隧道提示"
-        } else if line.contains("Requesting new quick Tunnel") {
-            "正在申请公网地址"
-        } else {
-            "隧道运行信息"
-        };
-        return format!(
-            "[隧道] {description} | {}",
-            line.trim_start_matches("[cloudflared] ")
-        );
-    }
-    line.trim_start_matches("[mcp-shell] ").to_owned()
-}
-
 pub struct Host {
     server: Child,
-    tunnel: Option<Child>,
     config: HostConfig,
     _temp: TempDir,
 }
@@ -285,11 +229,17 @@ impl Host {
         } else {
             roots[0].join(".tmp/mcp-shell")
         };
+        let history = if config.unrestricted {
+            state.join("output/history")
+        } else {
+            roots[0].join(".tmp/mcp-shell/history")
+        };
         // The secret is passed only in the child's environment, never on disk or argv.
         let data = json!({
             "listen": format!("{}:{}", config.bind, config.port),
             "allowed_ips": if config.bind == "127.0.0.1" { vec!["127.0.0.1"] } else { vec![] },
             "unrestricted":config.unrestricted, "output_dir":output,
+            "history_dir":history,
             "roots":roots, "command_timeout_sec":60, "max_command_timeout_sec":3600,
             "audit_log":state.join("audit.jsonl"), "log_file":state.join("operations.log")
         });
@@ -306,7 +256,6 @@ impl Host {
         )?;
         let mut host = Self {
             server,
-            tunnel: None,
             config,
             _temp: temp,
         };
@@ -327,32 +276,10 @@ impl Host {
         }
         Err("服务未能在 10 秒内就绪，请检查端口是否被占用".into())
     }
-
-    fn start_tunnel(&mut self, logs: SyncSender<String>) -> Result<(), String> {
-        if self.tunnel.is_some() {
-            return Ok(());
-        }
-        self.tunnel = Some(spawn(
-            Command::new(&self.config.cloudflared)
-                .args(["tunnel", "--no-autoupdate", "--url"])
-                .arg(format!("http://127.0.0.1:{}", self.config.port)),
-            logs,
-            "cloudflared",
-        )?);
-        Ok(())
-    }
-
-    fn stop_tunnel(&mut self) {
-        if let Some(mut child) = self.tunnel.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-    }
 }
 
 impl Drop for Host {
     fn drop(&mut self) {
-        self.stop_tunnel();
         drop(self.server.stdin.take()); // EOF triggers Go's graceful shutdown, including process trees.
         let deadline = Instant::now() + Duration::from_secs(8);
         while Instant::now() < deadline {
@@ -380,8 +307,7 @@ impl Supervisor {
         // A minimized window may stop repainting; logs must not grow without bound.
         let (display_logs, logs) = mpsc::sync_channel(400);
         let worker = thread::spawn(move || {
-            let (logs_tx, mut logs_rx) = mpsc::sync_channel(256);
-            let mut active_logs = logs_tx;
+            let (_logs_tx, mut logs_rx) = mpsc::sync_channel(256);
             let mut host: Option<Host> = None;
             loop {
                 match rx.recv_timeout(Duration::from_millis(100)) {
@@ -391,9 +317,8 @@ impl Supervisor {
                         }
                         // Isolate old process logs from a new sharing session.
                         let channels = mpsc::sync_channel(256);
-                        active_logs = channels.0;
                         logs_rx = channels.1;
-                        match Host::start(config, active_logs.clone()) {
+                        match Host::start(config, channels.0) {
                             Ok(h) => {
                                 host = Some(h);
                                 let _ = events_tx.send(Event::Running(true));
@@ -406,29 +331,7 @@ impl Supervisor {
                     }
                     Ok(Action::Stop) => {
                         host.take();
-                        let _ = events_tx.send(Event::Url(String::new()));
-                        let _ = events_tx.send(Event::Tunnel(false));
                         let _ = events_tx.send(Event::Running(false));
-                    }
-                    Ok(Action::TunnelStart) => {
-                        if let Some(h) = &mut host {
-                            match h.start_tunnel(active_logs.clone()) {
-                                Ok(()) => {
-                                    let _ = events_tx.send(Event::Tunnel(true));
-                                }
-                                Err(e) => {
-                                    let _ = events_tx.send(Event::Error(e));
-                                    let _ = events_tx.send(Event::Tunnel(false));
-                                }
-                            }
-                        }
-                    }
-                    Ok(Action::TunnelStop) => {
-                        if let Some(h) = &mut host {
-                            h.stop_tunnel();
-                        }
-                        let _ = events_tx.send(Event::Tunnel(false));
-                        let _ = events_tx.send(Event::Url(String::new()));
                     }
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -437,30 +340,14 @@ impl Supervisor {
                     let Ok(line) = logs_rx.try_recv() else {
                         break;
                     };
-                    if line.starts_with("[cloudflared]")
-                        && host.as_ref().is_some_and(|h| h.tunnel.is_some())
-                    {
-                        if let Some(url) = tunnel_url(&line) {
-                            let _ = events_tx.send(Event::Url(url));
-                        }
-                    }
-                    let _ = display_logs.try_send(chinese_log(&line));
+                    let _ =
+                        display_logs.try_send(line.trim_start_matches("[mcp-shell] ").to_owned());
                 }
                 if let Some(h) = &mut host {
                     if let Ok(Some(status)) = h.server.try_wait() {
                         let _ = events_tx.send(Event::Error(format!("本地服务已退出：{status}")));
                         host.take();
                         let _ = events_tx.send(Event::Running(false));
-                        let _ = events_tx.send(Event::Tunnel(false));
-                        let _ = events_tx.send(Event::Url(String::new()));
-                    } else if let Some(tunnel) = &mut h.tunnel {
-                        if let Ok(Some(status)) = tunnel.try_wait() {
-                            h.tunnel.take();
-                            let _ = events_tx
-                                .send(Event::Error(format!("隧道已退出：{status}；可重新开启")));
-                            let _ = events_tx.send(Event::Tunnel(false));
-                            let _ = events_tx.send(Event::Url(String::new()));
-                        }
                     }
                 }
             }
@@ -492,22 +379,6 @@ impl Drop for Supervisor {
 mod tests {
     use super::*;
     #[test]
-    fn parses_only_quick_tunnel_origins() {
-        assert_eq!(
-            tunnel_url("INF | https://a-b-c.trycloudflare.com |"),
-            Some("https://a-b-c.trycloudflare.com/mcp".into())
-        );
-        for bad in [
-            "https://trycloudflare.com",
-            "https://a.trycloudflare.com.evil.com",
-            "http://a.trycloudflare.com",
-            "https://u@a.trycloudflare.com",
-            "https://a.trycloudflare.com/path",
-        ] {
-            assert_eq!(tunnel_url(bad), None);
-        }
-    }
-    #[test]
     fn strong_session_tokens() {
         let a = token();
         assert_eq!(a.len(), 64);
@@ -526,7 +397,6 @@ mod tests {
         let supervisor = Supervisor::new();
         supervisor.send(Action::Start(HostConfig {
             server: std::env::var("MCP_SHELL_TEST_BINARY").expect("set MCP_SHELL_TEST_BINARY"),
-            cloudflared: "not-used".into(),
             roots: root.path().to_string_lossy().into_owned(),
             port,
             token: secret.clone(),
@@ -625,93 +495,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "explicit opt-in: opens a temporary public tunnel to an isolated test root"]
-    fn live_public_tunnel() {
-        let binary = std::env::var("MCP_SHELL_TEST_BINARY").expect("set MCP_SHELL_TEST_BINARY");
-        let tunnel_binary = std::env::var("MCP_SHELL_TEST_TUNNEL_BINARY")
-            .expect("set MCP_SHELL_TEST_TUNNEL_BINARY");
-        let root = tempfile::tempdir().unwrap();
-        let socket = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = socket.local_addr().unwrap().port();
-        drop(socket);
-        let secret = token();
-        let (logs, rx) = mpsc::sync_channel(256);
-        let mut host = Host::start(
-            HostConfig {
-                server: binary,
-                cloudflared: tunnel_binary,
-                roots: root.path().to_string_lossy().into_owned(),
-                port,
-                token: secret.clone(),
-                bind: "127.0.0.1".into(),
-                unrestricted: false,
-            },
-            logs.clone(),
-        )
-        .unwrap();
-        host.start_tunnel(logs).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(45);
-        let mut address = None;
-        let mut recent = std::collections::VecDeque::new();
-        while Instant::now() < deadline {
-            if let Ok(line) = rx.recv_timeout(Duration::from_millis(200)) {
-                if line.starts_with("[cloudflared]") {
-                    address = tunnel_url(&line).or(address);
-                }
-                recent.push_back(line);
-                if recent.len() > 12 {
-                    recent.pop_front();
-                }
-            }
-            if address.is_some() {
-                break;
-            }
-        }
-        let address = address.unwrap_or_else(|| panic!("No tunnel URL: {recent:?}"));
-        let remote = Remote::new(&address, &secret, Duration::from_secs(10)).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(60);
-        let mut connected = false;
-        let mut last_error = String::new();
-        while Instant::now() < deadline {
-            match remote.connect() {
-                Ok(_) => {
-                    connected = true;
-                    break;
-                }
-                Err(e) => last_error = e,
-            }
-            thread::sleep(Duration::from_secs(2));
-        }
-        assert!(connected, "Public tunnel not reachable: {last_error}");
-        let wrong = Remote::new(&address, &token(), Duration::from_secs(10)).unwrap();
-        assert!(wrong.connect().unwrap_err().contains("认证失败"));
-        let result = remote
-            .call(
-                1,
-                "run_command",
-                json!({"command":"hostname","timeout_sec":5}),
-            )
-            .unwrap();
-        assert!(result.contains("exit_code: 0"));
-        remote
-            .call(
-                2,
-                "write_file",
-                json!({"path":"public-test.txt","content":"公网隧道验证"}),
-            )
-            .unwrap();
-        assert!(remote
-            .call(3, "read_file", json!({"path":"public-test.txt"}))
-            .unwrap()
-            .contains("公网隧道验证"));
-        host.stop_tunnel();
-        assert!(host.tunnel.is_none());
-        drop(host);
-        assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err());
-        println!("Public HTTPS tunnel: auth rejection, command, file roundtrip, and local shutdown verified");
-    }
-
-    #[test]
     #[ignore = "requires MCP_SHELL_TEST_BINARY pointing to the built Go server"]
     fn real_server_auth_files_commands_cancellation_and_shutdown() {
         let binary = std::env::var("MCP_SHELL_TEST_BINARY").expect("set MCP_SHELL_TEST_BINARY");
@@ -723,14 +506,13 @@ mod tests {
         let (logs, _rx) = mpsc::sync_channel(256);
         let config = HostConfig {
             server: binary.clone(),
-            cloudflared: "missing-cloudflared-for-test".into(),
             roots: root.path().to_string_lossy().into_owned(),
             port,
             token: secret.clone(),
             bind: "127.0.0.1".into(),
             unrestricted: false,
         };
-        let mut host = Host::start(config, logs.clone()).expect("start real Go server");
+        let host = Host::start(config, logs).expect("start real Go server");
         let url = format!("http://127.0.0.1:{port}/mcp");
         let remote = Remote::new(&url, &secret, Duration::from_secs(40)).unwrap();
         assert!(remote.connect().unwrap().contains("default_shell:"));
@@ -785,8 +567,6 @@ mod tests {
             result.contains("exit_code: 0") && result.contains("gui-e2e-你好"),
             "{result}"
         );
-        assert!(host.start_tunnel(logs).is_err()); // Tunnel failure must leave the local service alive.
-        assert!(remote.connect().is_ok());
 
         let wait_command = if cfg!(windows) {
             "Set-Content cancellation.ready ready; Start-Sleep -Seconds 30"

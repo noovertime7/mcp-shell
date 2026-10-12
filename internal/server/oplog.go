@@ -13,6 +13,7 @@ var readOnlyTools = map[string]bool{
 	"list_roots": true, "list_dir": true, "read_file": true, "glob": true, "grep": true,
 	"read_process_output": true, "list_processes": true,
 	"system_info": true, "get_env": true, "operation_history": true,
+	"read_image": true, "read_images": true, "capture_screen": true,
 }
 
 func toolLabel(name string) string {
@@ -23,6 +24,10 @@ func toolLabel(name string) string {
 		"run_command": "执行命令", "start_process": "启动后台进程",
 		"read_process_output": "读取进程输出", "list_processes": "查看后台进程", "stop_process": "停止后台进程",
 		"system_info": "查看系统信息", "get_env": "查看环境变量", "operation_history": "查看操作历史",
+		"read_image": "读取图片", "read_images": "批量读取图片", "capture_screen": "截取屏幕",
+		"notify_user": "弹出通知", "get_clipboard": "读取剪贴板", "set_clipboard": "写入剪贴板",
+		"open_target": "打开目标", "inspect_port": "排查端口", "http_request": "HTTP请求",
+		"write_process_input": "进程标准输入",
 	}
 	if label, ok := labels[name]; ok {
 		return label

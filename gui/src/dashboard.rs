@@ -108,7 +108,8 @@ impl DaySummary {
             }
 
             match record.tool.as_str() {
-                "read_file" | "list_dir" | "grep" | "glob" | "list_roots" => {
+                "read_file" | "list_dir" | "grep" | "glob" | "list_roots"
+                | "read_image" | "read_images" => {
                     summary.read_count += 1;
                 }
                 "write_file" | "edit_file" | "multi_edit" | "delete_path" | "move_path" => {

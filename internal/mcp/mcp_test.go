@@ -114,3 +114,42 @@ func TestGetIsNotAllowed(t *testing.T) {
 		t.Fatalf("GET status %d", resp.StatusCode)
 	}
 }
+
+type imageTestIn struct {
+	Name string `json:"name"`
+}
+
+func TestTypedCallWithImage(t *testing.T) {
+	s := NewServer("test", "0.0.1", "")
+	s.AddTool(TypedCall("view_test_image", "view test image", func(ctx context.Context, in imageTestIn) (*CallResult, error) {
+		return &CallResult{
+			Content: []Content{
+				{Type: "text", Text: "image info: " + in.Name},
+				{Type: "image", Data: "aGVsbG8=", MIMEType: "image/jpeg"},
+			},
+		}, nil
+	}))
+	ts := httptest.NewServer(s)
+	defer ts.Close()
+
+	code, m := post(t, ts.URL, `{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"view_test_image","arguments":{"name":"sample.jpg"}}}`)
+	if code != 200 {
+		t.Fatalf("status %d: %v", code, m)
+	}
+	res, ok := m["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("result missing: %v", m)
+	}
+	contents, ok := res["content"].([]any)
+	if !ok || len(contents) != 2 {
+		t.Fatalf("expected 2 content items: %v", res)
+	}
+	textItem := contents[0].(map[string]any)
+	imgItem := contents[1].(map[string]any)
+	if textItem["type"] != "text" || textItem["text"] != "image info: sample.jpg" {
+		t.Errorf("unexpected text item: %v", textItem)
+	}
+	if imgItem["type"] != "image" || imgItem["data"] != "aGVsbG8=" || imgItem["mimeType"] != "image/jpeg" {
+		t.Errorf("unexpected image item: %v", imgItem)
+	}
+}

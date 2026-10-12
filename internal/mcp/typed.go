@@ -38,6 +38,34 @@ func Typed[In any](name, desc string, fn func(ctx context.Context, in In) (strin
 	}
 }
 
+// TypedCall builds a Tool whose arguments are decoded into In and returns a CallResult.
+func TypedCall[In any](name, desc string, fn func(ctx context.Context, in In) (*CallResult, error)) *Tool {
+	t := reflect.TypeOf((*In)(nil)).Elem()
+	schema := schemaFor(t)
+	required, _ := schema["required"].([]string)
+	return &Tool{
+		Name:        name,
+		Description: desc,
+		InputSchema: schema,
+		CallHandler: func(ctx context.Context, args json.RawMessage) (*CallResult, error) {
+			var present map[string]json.RawMessage
+			if err := json.Unmarshal(args, &present); err != nil {
+				return nil, fmt.Errorf("arguments must be a JSON object: %v", err)
+			}
+			for _, r := range required {
+				if _, ok := present[r]; !ok {
+					return nil, fmt.Errorf("missing required argument %q", r)
+				}
+			}
+			var in In
+			if err := json.Unmarshal(args, &in); err != nil {
+				return nil, fmt.Errorf("invalid arguments: %v", err)
+			}
+			return fn(ctx, in)
+		},
+	}
+}
+
 // schemaFor returns a JSON Schema for t (structs, strings, numbers, bools,
 // slices and string-keyed maps).
 func schemaFor(t reflect.Type) map[string]any {

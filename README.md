@@ -35,8 +35,8 @@
 | `start_process` / `read_process_output` / `list_processes` / `stop_process` | 后台进程（dev server、watcher 等）；`read_process_output` 支持 `until_exit`（等到退出）、`wait_for`（等到输出匹配正则）、`tail`（只看末尾） |
 | `write_process_input` | 向运行中的后台进程标准输入（stdin）写入文本/按键，可选择关闭 stdin |
 | `notify_user` | 在主机屏幕弹出原生系统通知（如构建或长任务完成时提醒），支持标题、内容与提示音 |
-| `get_clipboard` / `set_clipboard` | 读取与写入主机系统剪贴板，支持跨电脑传递代码、Token 或错误日志 |
-| `capture_screen` | macOS 静音截屏，可保存至临时目录或指定路径，供多模态模型查看屏幕 UI 与报错 |
+| `read_image` / `read_images` | 读取单张或批量（最多 10 张）主机图片；以标准 MCP `ImageContent` 直接回传供多模态模型查看，附带尺寸与缩放 `TextContent`；支持 EXIF 自动转正、旋转、原图像素局部裁切（crop）、长边缩放与 <=1MB 自动压缩（支持 jpg/png/webp/gif/bmp/tiff/heic） |
+| `capture_screen` | macOS 静音截屏，可保存至临时目录或指定路径；支持 `return_image=true` 直接以 MCP `ImageContent` 回传屏幕图像供视觉检查 |
 | `open_target` | 在主机默认浏览器打开 URL（如本地服务），或在访达/资源管理器打开文件与目录 |
 | `inspect_port` | 检查主机 TCP 端口占用（显示监听进程 PID 与名称），支持传入 `kill: true` 释放端口 |
 | `http_request` | 由主机发起 HTTP/HTTPS 请求，用于本地回环接口联调与服务健康检查 |

@@ -363,6 +363,36 @@ func addTool[In any](s *Server, name, desc string, fn func(ctx context.Context, 
 	}))
 }
 
+// addCallTool registers a tool that returns a full MCP CallResult (e.g. ImageContent).
+// Its textual summary is passed to operation log and history, preserving full image payloads.
+func addCallTool[In any](s *Server, name, desc string, fn func(ctx context.Context, in In) (*mcp.CallResult, string, error)) {
+	s.mcp.AddTool(mcp.TypedCall(name, desc, func(ctx context.Context, in In) (*mcp.CallResult, error) {
+		start := time.Now()
+		log.Printf("[操作开始] %s (%s) %s", toolLabel(name), name, describeArgs(in))
+		res, summary, err := fn(ctx, in)
+		elapsed := time.Since(start)
+		s.logCall(name, in, summary, err, elapsed)
+		s.record(ctx, name, in, summary, err, start, elapsed)
+		ev := map[string]any{
+			"event":       "tool",
+			"tool":        name,
+			"args":        summarize(in),
+			"duration_ms": elapsed.Milliseconds(),
+			"ok":          err == nil && (res == nil || !res.IsError),
+		}
+		if err != nil {
+			ev["error"] = err.Error()
+		} else if res != nil && res.IsError && len(res.Content) > 0 {
+			ev["error"] = res.Content[0].Text
+		}
+		s.auditEvent(ev)
+		if err != nil {
+			return nil, err
+		}
+		return res, nil
+	}))
+}
+
 // capResult keeps a tool result below max bytes so the client does not reject
 // it; tools that can produce more output say how to page through it.
 func capResult(out string, max int) string {

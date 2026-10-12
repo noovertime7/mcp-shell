@@ -12,6 +12,7 @@ import (
 	"github.com/noovertime7/mcp-shell/internal/exectools"
 	"github.com/noovertime7/mcp-shell/internal/fstools"
 	"github.com/noovertime7/mcp-shell/internal/history"
+	"github.com/noovertime7/mcp-shell/internal/mcp"
 	"github.com/noovertime7/mcp-shell/internal/sysinfo"
 )
 
@@ -284,9 +285,19 @@ func (s *Server) registerTools() {
 			return setClipboard(in.Text)
 		})
 
-	addTool(s, "capture_screen", "Capture a screenshot on macOS (quietly without sound). Saves to scratch dir if path is empty.",
-		func(ctx context.Context, in captureScreenIn) (string, error) {
-			return s.captureScreen(in)
+	addCallTool(s, "read_image", "Read an image on the host and return it as standard MCP ImageContent along with file metadata TextContent. Supports jpg/jpeg/png/webp/gif/bmp/tiff/heic, auto-orients EXIF, optional crop (original pixel coords), rotate, max_dimension scaling, and <=1MB compression.",
+		func(ctx context.Context, in readImageIn) (*mcp.CallResult, string, error) {
+			return s.readImage(ctx, in)
+		})
+
+	addCallTool(s, "read_images", "Batch read multiple images (up to 10) on the host. Returns alternating TextContent (with file info) and ImageContent for each image, with total payload capped at 4MB.",
+		func(ctx context.Context, in readImagesIn) (*mcp.CallResult, string, error) {
+			return s.readImages(ctx, in)
+		})
+
+	addCallTool(s, "capture_screen", "Capture a screenshot on macOS (quietly without sound). Saves to scratch dir if path is empty. Set return_image=true to receive the screenshot directly as an ImageContent for AI visual inspection.",
+		func(ctx context.Context, in captureScreenIn) (*mcp.CallResult, string, error) {
+			return s.captureScreen(ctx, in)
 		})
 
 	addTool(s, "open_target", "Open a URL in the host browser, or open a file/directory in Finder/Explorer/default application.",

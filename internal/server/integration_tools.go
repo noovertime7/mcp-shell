@@ -13,6 +13,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/noovertime7/mcp-shell/internal/imgtools"
+	"github.com/noovertime7/mcp-shell/internal/mcp"
 )
 
 type notifyUserIn struct {
@@ -117,11 +120,12 @@ func setClipboard(text string) (string, error) {
 }
 
 type captureScreenIn struct {
-	Path       string `json:"path,omitempty" jsonschema:"destination PNG file path; defaults to screenshot_<timestamp>.png in scratch directory"`
-	WindowOnly bool   `json:"window_only,omitempty" jsonschema:"capture only the frontmost window on macOS"`
+	Path        string `json:"path,omitempty" jsonschema:"destination PNG file path; defaults to screenshot_<timestamp>.png in scratch directory"`
+	WindowOnly  bool   `json:"window_only,omitempty" jsonschema:"capture only the frontmost window on macOS"`
+	ReturnImage bool   `json:"return_image,omitempty" jsonschema:"return screenshot directly as MCP ImageContent (scaled and compressed to <= 1MB) for AI vision"`
 }
 
-func (s *Server) captureScreen(in captureScreenIn) (string, error) {
+func (s *Server) captureScreen(ctx context.Context, in captureScreenIn) (*mcp.CallResult, string, error) {
 	target := strings.TrimSpace(in.Path)
 	if target == "" {
 		dir := s.scratch
@@ -133,13 +137,13 @@ func (s *Server) captureScreen(in captureScreenIn) (string, error) {
 	} else {
 		resolved, err := s.guard.Resolve(target)
 		if err != nil {
-			return "", err
+			return nil, "", err
 		}
 		target = resolved
 	}
 
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return "", err
+		return nil, "", err
 	}
 
 	switch runtime.GOOS {
@@ -151,15 +155,41 @@ func (s *Server) captureScreen(in captureScreenIn) (string, error) {
 		args = append(args, target)
 		cmd := exec.Command("/usr/sbin/screencapture", args...)
 		if out, err := cmd.CombinedOutput(); err != nil {
-			return "", fmt.Errorf("screencapture: %v (%s)", err, strings.TrimSpace(string(out)))
+			return nil, "", fmt.Errorf("screencapture: %v (%s)", err, strings.TrimSpace(string(out)))
 		}
 		st, err := os.Stat(target)
 		if err != nil {
-			return "", fmt.Errorf("screenshot was not saved: %w", err)
+			return nil, "", fmt.Errorf("screenshot was not saved: %w", err)
 		}
-		return fmt.Sprintf("screenshot saved: %s (%d bytes)", target, st.Size()), nil
+
+		summary := fmt.Sprintf("screenshot saved: %s (%d bytes)", target, st.Size())
+		if !in.ReturnImage {
+			return &mcp.CallResult{
+				Content: []mcp.Content{
+					{Type: "text", Text: summary},
+				},
+			}, summary, nil
+		}
+
+		imgRes, err := imgtools.Process(ctx, target, imgtools.Options{
+			MaxDimension: 1568,
+			Quality:      80,
+			Format:       "jpeg",
+			ScratchDir:   s.scratch,
+		})
+		if err != nil {
+			return nil, "", fmt.Errorf("screenshot captured at %s, but processing image failed: %w", target, err)
+		}
+
+		callRes := &mcp.CallResult{
+			Content: []mcp.Content{
+				{Type: "text", Text: fmt.Sprintf("%s\n%s", summary, imgRes.TextInfo)},
+				{Type: "image", Data: imgRes.Base64, MIMEType: imgRes.MIMEType},
+			},
+		}
+		return callRes, summary, nil
 	default:
-		return "", fmt.Errorf("capture_screen is currently only supported on macOS (host is %s)", runtime.GOOS)
+		return nil, "", fmt.Errorf("capture_screen is currently only supported on macOS (host is %s)", runtime.GOOS)
 	}
 }
 

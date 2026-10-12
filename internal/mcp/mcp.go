@@ -40,6 +40,20 @@ const (
 	codeInvalidParams  = -32602
 )
 
+// Content represents an item in an MCP tool call result.
+type Content struct {
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	Data     string `json:"data,omitempty"`
+	MIMEType string `json:"mimeType,omitempty"`
+}
+
+// CallResult represents an MCP tool call result with rich content.
+type CallResult struct {
+	Content []Content `json:"content"`
+	IsError bool      `json:"isError,omitempty"`
+}
+
 // Tool is one callable tool. Handler receives the raw "arguments" object.
 // A returned error is reported to the model as a tool result with isError.
 type Tool struct {
@@ -47,6 +61,7 @@ type Tool struct {
 	Description string
 	InputSchema map[string]any
 	Handler     func(ctx context.Context, args json.RawMessage) (string, error)
+	CallHandler func(ctx context.Context, args json.RawMessage) (*CallResult, error)
 }
 
 // Server dispatches JSON-RPC messages to tools. It implements http.Handler.
@@ -261,6 +276,13 @@ func (s *Server) call(r *http.Request, req request) (any, *rpcError) {
 		if t == nil {
 			return nil, &rpcError{Code: codeInvalidParams, Message: "unknown tool: " + p.Name}
 		}
+		if t.CallHandler != nil {
+			res, err := s.runCallTool(r.Context(), req.ID, t, p.Arguments)
+			if err != nil {
+				return toolResult("error: "+err.Error(), true), nil
+			}
+			return res, nil
+		}
 		text, err := s.runTool(r.Context(), req.ID, t, p.Arguments)
 		if err != nil {
 			return toolResult("error: "+err.Error(), true), nil
@@ -273,6 +295,31 @@ func (s *Server) call(r *http.Request, req request) (any, *rpcError) {
 		return map[string]any{"prompts": []any{}}, nil
 	}
 	return nil, &rpcError{Code: codeMethodNotFound, Message: "method not found: " + req.Method}
+}
+
+// runCallTool runs a CallHandler, cancellable by request or notification, and recovers panics.
+func (s *Server) runCallTool(parent context.Context, id json.RawMessage, t *Tool, args json.RawMessage) (res *CallResult, err error) {
+	ctx, cancel := context.WithCancel(parent)
+	key := string(id)
+	s.mu.Lock()
+	s.inflight[key] = cancel
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.inflight, key)
+		s.mu.Unlock()
+		cancel()
+	}()
+	defer func() {
+		if p := recover(); p != nil {
+			log.Printf("[mcp] panic in tool %s: %v\n%s", t.Name, p, debug.Stack())
+			err = fmt.Errorf("internal error in %s: %v", t.Name, p)
+		}
+	}()
+	if len(args) == 0 || bytes.Equal(args, nullID) {
+		args = json.RawMessage("{}")
+	}
+	return t.CallHandler(ctx, args)
 }
 
 // runTool runs a handler, cancellable by the HTTP request ending or by

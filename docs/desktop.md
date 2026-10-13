@@ -32,6 +32,8 @@ GUI 默认开放当前系统用户可访问的全部文件和所有命令工具�
 
 macOS 源码构建脚本支持 Apple Silicon 与 Intel，会按当前 Mac 架构生成包含 GUI 和 Go 服务的 `.app` ZIP。
 
+应用图标和宣传素材位于 `assets/brand/`：PNG 原图、透明 Logo、横幅及 macOS `app.icns`。构建脚本会将图标加入应用资源并设置 `CFBundleIconFile`；已安装的旧应用需要使用新构建包替换后才会显示新图标。生成提示词及各素材用途见 [素材说明](../assets/brand/README.md)。
+
 在 Mac 准备 Xcode Command Line Tools，以及 Go 和 Rust（1.88+）。如果使用 Homebrew：
 
 ```bash

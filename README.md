@@ -1,5 +1,7 @@
 # mcp-shell
 
+![MCP Shell](assets/brand/banner.png)
+
 一个跑在开发机上的 MCP 服务器。局域网里另一台机器（例如虚拟机）上的 Claude Code 通过 Streamable HTTP 连接它，在这台机器上读写代码、执行编译测试命令、启动开发服务。
 
     客户端 (Claude Code) ──HTTP + Bearer token──▶ mcp-shell :8765/mcp ──▶ roots 内的项目目录

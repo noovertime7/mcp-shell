@@ -24,6 +24,7 @@ import (
 	"github.com/noovertime7/mcp-shell/internal/history"
 	"github.com/noovertime7/mcp-shell/internal/mcp"
 	"github.com/noovertime7/mcp-shell/internal/pathguard"
+	"github.com/noovertime7/mcp-shell/internal/webtools"
 )
 
 // Version is reported to MCP clients.
@@ -39,6 +40,7 @@ type Server struct {
 	mcp     *mcp.Server
 	nets    []*net.IPNet
 	history *history.Store
+	web     *webtools.Client
 	// scratch is a directory for temporary files of the model (commit
 	// messages, patches), offered in list_roots; empty without output_dir.
 	scratch string
@@ -77,6 +79,12 @@ func New(cfg *config.Config) (*Server, error) {
 			s.scratch = ""
 		}
 	}
+	web, err := webtools.New(cfg.SearchURL, cfg.WebProxy)
+	if err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+	web.BochaKey = cfg.BochaAPIKey
+	s.web = web
 	s.procs = exectools.NewManager(s.runner)
 	if cfg.MaxCallWaitSec > 0 {
 		wait := time.Duration(cfg.MaxCallWaitSec) * time.Second

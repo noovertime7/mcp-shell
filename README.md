@@ -42,6 +42,8 @@
 | `open_target` | 在主机默认浏览器打开 URL（如本地服务），或在访达/资源管理器打开文件与目录 |
 | `inspect_port` | 检查主机 TCP 端口占用（显示监听进程 PID 与名称），支持传入 `kill: true` 释放端口 |
 | `http_request` | 由主机发起 HTTP/HTTPS 请求，用于本地回环接口联调与服务健康检查 |
+| `web_search` | 网页搜索：依次使用博查搜索 API（配置了 key 时）、SearXNG、必应结果页，返回标题、网址和摘要；可按 `site`、`time_range`、`language` 收窄 |
+| `web_fetch` | 读取网页为 Markdown：只保留正文（去掉导航、脚本、页头页脚），保留标题、列表、表格、代码和绝对链接，自动转换 GBK 等编码；`find` 只返回提到关键词的段落，`offset` 分段读长页面，`links` 列出页面链接，页面缓存 15 分钟 |
 | `system_info` | 系统版本、用户、CPU、内存、磁盘、开机时长、代码页、时区，以及 git/go/node/pnpm/python/java/docker 等工具的路径和版本 |
 | `get_env` | 查看环境变量：全部、按关键字过滤或按名称；PATH 类变量逐行列出并标出不存在的目录；Windows 上 `scope=user/machine` 查看注册表里的值；疑似密钥的值默认隐藏，`MCP_SHELL_TOKEN` 永不显示 |
 | `operation_history` | 查看历史工具调用（跨重启、跨会话持久保存）：按工具、关键字、失败、仅改动、时间过滤；传 `id` 查看单次调用的参数和输出开头 |
@@ -107,6 +109,9 @@ New-NetFirewallRule -DisplayName "mcp-shell 8765" -Direction Inbound -Protocol T
 | `history_dir` | 操作历史目录，每天一个 JSON lines 文件，供 `operation_history` 查询（默认 `<output_dir>/history`，`-` 关闭） |
 | `history_days` | 操作历史保留天数（默认 30） |
 | `max_call_wait_sec` | 单次工具调用最长等待（默认 45）：`run_command` 超过后转为后台进程继续运行（仍受超时限制），`read_process_output` 单次最多等这么久。应小于客户端和中间代理的请求超时；设为负数关闭转后台 |
+| `search_url` | `web_search` 使用的 SearXNG 地址（需在其 settings.yml 开启 json 输出）；默认 `http://127.0.0.1:8080`，填 `-` 不使用 SearXNG |
+| `web_proxy` | `web_search` / `web_fetch` 使用的代理，如 `http://127.0.0.1:7890` 或 `socks5://...`；默认读取 HTTP(S)_PROXY 环境变量 |
+| `bocha_api_key` | 博查搜索 API 的 key，配置后 `web_search` 优先使用博查。也可以用环境变量 `BOCHA_API_KEY`，或写在应用设置目录的 `web.json`（macOS：`~/Library/Application Support/mcp-shell/web.json`，Windows：`%LOCALAPPDATA%\mcp-shell\web.json`），桌面版重写配置时不会丢失；`web.json` 也可以写 `search_url` 和 `web_proxy` |
 
 ### Windows PowerShell 5.1 的默认行为
 

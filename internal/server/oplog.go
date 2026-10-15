@@ -14,6 +14,7 @@ var readOnlyTools = map[string]bool{
 	"read_process_output": true, "list_processes": true,
 	"system_info": true, "get_env": true, "operation_history": true,
 	"read_image": true, "read_images": true, "capture_screen": true,
+	"web_search": true, "web_fetch": true,
 }
 
 func toolLabel(name string) string {
@@ -27,6 +28,7 @@ func toolLabel(name string) string {
 		"read_image": "读取图片", "read_images": "批量读取图片", "capture_screen": "截取屏幕",
 		"notify_user": "弹出通知", "get_clipboard": "读取剪贴板", "set_clipboard": "写入剪贴板",
 		"open_target": "打开目标", "inspect_port": "排查端口", "http_request": "HTTP请求",
+		"web_search": "网页搜索", "web_fetch": "读取网页",
 		"write_process_input": "进程标准输入",
 	}
 	if label, ok := labels[name]; ok {

@@ -315,6 +315,16 @@ func (s *Server) registerTools() {
 			return s.httpRequest(ctx, in)
 		})
 
+	addTool(s, "web_search", "Search the web from the host: titles, URLs and snippets, from the Bocha search API when its key is set, else the configured SearXNG, else Bing (all work from mainland China). Narrow with site (a domain), time_range (day, week, month, year) and language; then read a result with web_fetch.",
+		func(ctx context.Context, in webSearchIn) (string, error) {
+			return s.webSearch(ctx, in)
+		})
+
+	addTool(s, "web_fetch", "Read a web page as Markdown: only its main content (navigation, scripts and page frame removed), with headings, lists, tables, code and absolute links kept; GBK and other charsets are converted. Long pages come in parts: continue with offset from the next: line. find=<keywords> returns only the sections that mention them, under their headings: the cheapest way to answer a question from a long page. links=true lists the page's links (e.g. a documentation sidebar). Pages are kept 15 minutes, so reading in parts fetches once; refresh=true fetches again.",
+		func(ctx context.Context, in webFetchIn) (string, error) {
+			return s.webFetch(ctx, in)
+		})
+
 	addTool(s, "system_info", "Describe the host: OS version, user, CPUs, memory, disks, uptime, code page and time zone, and the developer tools on PATH with their versions (git, go, node, pnpm, python, java, docker, ...).",
 		func(ctx context.Context, _ systemInfoIn) (string, error) {
 			return s.systemInfo(ctx), nil

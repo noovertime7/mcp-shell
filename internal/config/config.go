@@ -73,6 +73,69 @@ type Config struct {
 	// long. Keep it below the client's and any proxy's request timeout.
 	// A negative value turns the hand-over off.
 	MaxCallWaitSec int `json:"max_call_wait_sec"`
+	// SearchURL is the SearXNG instance web_search asks first (its JSON
+	// output must be enabled). Empty tries http://127.0.0.1:8080; "-" skips
+	// SearXNG and searches Bing's result page only.
+	SearchURL string `json:"search_url"`
+	// WebProxy is an optional http(s) or socks5 proxy URL for web_search and
+	// web_fetch; empty uses the HTTP(S)_PROXY environment variables.
+	WebProxy string `json:"web_proxy"`
+	// BochaAPIKey makes web_search ask the Bocha web search API
+	// (api.bochaai.com) first. BOCHA_API_KEY or web.json in the app's
+	// settings directory set it when the config does not.
+	BochaAPIKey string `json:"bocha_api_key"`
+}
+
+// webFile holds web settings beside the desktop app's own settings
+// (desktop.json), so they survive the app rewriting the server config.
+type webFile struct {
+	BochaAPIKey string `json:"bocha_api_key"`
+	SearchURL   string `json:"search_url"`
+	WebProxy    string `json:"web_proxy"`
+}
+
+// WebFilePaths are where web.json is looked for, first found wins.
+func WebFilePaths() []string {
+	var dirs []string
+	if dir := os.Getenv("LOCALAPPDATA"); dir != "" {
+		dirs = append(dirs, dir)
+	}
+	if dir, err := os.UserConfigDir(); err == nil {
+		dirs = append(dirs, dir)
+	}
+	var paths []string
+	for _, dir := range dirs {
+		paths = append(paths, filepath.Join(dir, "mcp-shell", "web.json"))
+	}
+	return paths
+}
+
+// applyWeb fills web settings the config leaves empty from the environment
+// and web.json.
+func (c *Config) applyWeb(paths []string) {
+	if c.BochaAPIKey == "" {
+		c.BochaAPIKey = os.Getenv("BOCHA_API_KEY")
+	}
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var w webFile
+		if json.Unmarshal([]byte(strings.TrimPrefix(string(data), "\ufeff")), &w) != nil {
+			continue
+		}
+		if c.BochaAPIKey == "" {
+			c.BochaAPIKey = strings.TrimSpace(w.BochaAPIKey)
+		}
+		if c.SearchURL == "" {
+			c.SearchURL = strings.TrimSpace(w.SearchURL)
+		}
+		if c.WebProxy == "" {
+			c.WebProxy = strings.TrimSpace(w.WebProxy)
+		}
+		return
+	}
 }
 
 // Load reads path, applies defaults and the MCP_SHELL_TOKEN override, and validates.
@@ -91,6 +154,7 @@ func Load(path string) (*Config, error) {
 	if tok := os.Getenv("MCP_SHELL_TOKEN"); tok != "" {
 		c.Token = tok
 	}
+	c.applyWeb(WebFilePaths())
 	c.applyDefaults()
 	if err := c.validate(); err != nil {
 		return nil, err
@@ -144,6 +208,12 @@ func (c *Config) applyDefaults() {
 	}
 	if c.OutputDir == "-" {
 		c.OutputDir = ""
+	}
+	if c.SearchURL == "" {
+		c.SearchURL = "http://127.0.0.1:8080"
+	}
+	if c.SearchURL == "-" {
+		c.SearchURL = ""
 	}
 }
 

@@ -1,7 +1,15 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver};
+use std::thread;
+use std::time::Duration;
+
 use tray_icon::{
-    menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
+    menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem},
     Icon, TrayIcon, TrayIconBuilder, TrayIconEvent,
 };
+
+// 界面循环处理到退出命令时置位。窗口隐藏后界面循环可能不跑，靠它判断要不要直接退出
+pub static QUIT_HANDLED: AtomicBool = AtomicBool::new(false);
 
 pub enum TrayCommand {
     ShowWindow,
@@ -14,7 +22,20 @@ pub struct TrayManager {
     status_item: MenuItem,
     toggle_item: MenuItem,
     show_item: MenuItem,
-    quit_item: MenuItem,
+    quit_id: MenuId,
+    menu_events: Receiver<MenuEvent>,
+}
+
+// 退出后本地服务读到 stdin 结束，会自己关闭并清理进程树
+fn exit_if_not_handled() {
+    thread::spawn(|| {
+        thread::sleep(Duration::from_secs(1));
+        if !QUIT_HANDLED.load(Ordering::SeqCst) {
+            std::process::exit(0);
+        }
+        thread::sleep(Duration::from_secs(12));
+        std::process::exit(0);
+    });
 }
 
 impl TrayManager {
@@ -44,12 +65,23 @@ impl TrayManager {
             .build()
             .map_err(|e| format!("无法创建状态栏图标：{e}"))?;
 
+        let (menu_tx, menu_events) = mpsc::channel();
+        let quit_id = quit_item.id().clone();
+        let handler_quit_id = quit_id.clone();
+        MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
+            if event.id == handler_quit_id {
+                exit_if_not_handled();
+            }
+            let _ = menu_tx.send(event);
+        }));
+
         Ok(Self {
             _tray: tray,
             status_item,
             toggle_item,
             show_item,
-            quit_item,
+            quit_id,
+            menu_events,
         })
     }
 
@@ -75,14 +107,14 @@ impl TrayManager {
     }
 
     pub fn poll_command(&self) -> Option<TrayCommand> {
-        if let Ok(event) = MenuEvent::receiver().try_recv() {
+        if let Ok(event) = self.menu_events.try_recv() {
             if event.id == self.show_item.id() {
                 return Some(TrayCommand::ShowWindow);
             }
             if event.id == self.toggle_item.id() {
                 return Some(TrayCommand::ToggleService);
             }
-            if event.id == self.quit_item.id() {
+            if event.id == self.quit_id {
                 return Some(TrayCommand::Quit);
             }
         }

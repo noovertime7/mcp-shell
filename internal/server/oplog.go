@@ -15,6 +15,8 @@ var readOnlyTools = map[string]bool{
 	"system_info": true, "get_env": true, "operation_history": true,
 	"read_image": true, "read_images": true, "capture_screen": true,
 	"web_search": true, "web_fetch": true,
+	"read_files": true, "file_info": true, "file_download": true,
+	"cursor_agents": true, "cursor_read": true,
 }
 
 func toolLabel(name string) string {
@@ -29,7 +31,9 @@ func toolLabel(name string) string {
 		"notify_user": "弹出通知", "get_clipboard": "读取剪贴板", "set_clipboard": "写入剪贴板",
 		"open_target": "打开目标", "inspect_port": "排查端口", "http_request": "HTTP请求",
 		"web_search": "网页搜索", "web_fetch": "读取网页",
-		"write_process_input": "进程标准输入",
+		"write_process_input": "进程标准输入", "read_files": "批量读取文件", "file_info": "查看文件校验",
+		"file_upload": "上传文件", "file_download": "下载文件",
+		"cursor_agents": "查看 Cursor Agent", "cursor_read": "读取 Cursor 对话", "cursor_send": "发消息给 Cursor", "cursor_new": "新建 Cursor Agent",
 	}
 	if label, ok := labels[name]; ok {
 		return label

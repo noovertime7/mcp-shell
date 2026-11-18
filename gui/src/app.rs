@@ -46,6 +46,7 @@ enum Page {
 pub struct Desktop {
     page: Page,
     supervisor: Supervisor,
+    quitting: bool,
     host: HostConfig,
     running: bool,
     busy: bool,
@@ -101,6 +102,7 @@ impl Desktop {
         let mut desktop = Self {
             page: Page::Console,
             supervisor: Supervisor::new(),
+            quitting: false,
             host,
             running: false,
             busy: false,
@@ -1124,10 +1126,10 @@ impl eframe::App for Desktop {
         }
 
         // Cancel close and hide to tray if user closes window
-        if ctx.input(|i| i.viewport().close_requested()) {
+        if !self.quitting && ctx.input(|i| i.viewport().close_requested()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-            self.message("应用已最小化到 macOS 顶部菜单栏，服务在后台继续运行", false);
+            self.message("应用已最小化到托盘，服务在后台继续运行；退出请用托盘菜单", false);
         }
 
         // Handle tray actions
@@ -1150,6 +1152,8 @@ impl eframe::App for Desktop {
                         }
                     }
                     TrayCommand::Quit => {
+                        crate::tray::QUIT_HANDLED.store(true, std::sync::atomic::Ordering::SeqCst);
+                        self.quitting = true;
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 }

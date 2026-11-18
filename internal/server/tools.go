@@ -79,7 +79,7 @@ type grepIn struct {
 type runCommandIn struct {
 	Command    string            `json:"command" jsonschema:"command or script to run"`
 	Cwd        string            `json:"cwd,omitempty" jsonschema:"working directory inside the roots; defaults to the first root"`
-	Shell      string            `json:"shell,omitempty" jsonschema:"powershell, pwsh or cmd; defaults to the configured shell"`
+	Shell      string            `json:"shell,omitempty" jsonschema:"powershell, pwsh or cmd on Windows; zsh, bash or sh elsewhere; defaults to the configured shell"`
 	TimeoutSec int               `json:"timeout_sec,omitempty" jsonschema:"kill the command after this many seconds"`
 	Env        map[string]string `json:"env,omitempty" jsonschema:"extra environment variables"`
 }
@@ -87,7 +87,7 @@ type runCommandIn struct {
 type startProcessIn struct {
 	Command string            `json:"command" jsonschema:"long-running command, e.g. pnpm dev"`
 	Cwd     string            `json:"cwd,omitempty" jsonschema:"working directory inside the roots"`
-	Shell   string            `json:"shell,omitempty" jsonschema:"powershell, pwsh or cmd"`
+	Shell   string            `json:"shell,omitempty" jsonschema:"powershell, pwsh or cmd on Windows; zsh, bash or sh elsewhere"`
 	Name    string            `json:"name,omitempty" jsonschema:"short label to recognise the process"`
 	Env     map[string]string `json:"env,omitempty" jsonschema:"extra environment variables"`
 }
@@ -167,7 +167,17 @@ func (s *Server) registerTools() {
 			return s.fs.ReadFile(in.Path, in.Offset, in.Limit)
 		})
 
-	addTool(s, "write_file", "Create a file or replace its whole content (written atomically). Prefer edit_file for changes to existing files.",
+	addTool(s, "read_files", "Read several text files (or parts of them) in one call, each like read_file with its own offset/limit; the read budget is shared between them.",
+		func(ctx context.Context, in readFilesIn) (string, error) {
+			return s.readFiles(in)
+		})
+
+	addTool(s, "file_info", "Size, modification time and sha256 of files on this host (for directories: file count and total size). Use it to check a transfer or compare files across machines without reading them.",
+		func(ctx context.Context, in fileInfoIn) (string, error) {
+			return s.fileInfo(in)
+		})
+
+	addTool(s, "write_file", "Create a file or replace its whole content (written atomically); the result gives its size and sha256. Prefer edit_file for changes to existing files, and the /files HTTP endpoint (see the server instructions) for large or binary files.",
 		func(ctx context.Context, in writeFileIn) (string, error) {
 			return s.fs.WriteFile(in.Path, in.Content, in.CreateDirs)
 		})
@@ -334,6 +344,10 @@ func (s *Server) registerTools() {
 		func(ctx context.Context, in getEnvIn) (string, error) {
 			return s.getEnv(in)
 		})
+
+	if runtime.GOOS == "windows" {
+		s.registerCursorTools()
+	}
 
 	if s.history != nil {
 		addTool(s, "operation_history", "List earlier tool calls on this host, newest first, from every session (kept on disk across restarts): time, tool, result, duration and the main argument. Filter by tool, query text, failed_only, changes_only or since; pass id to see one call's arguments and the start of its output.",

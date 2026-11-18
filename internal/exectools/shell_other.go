@@ -23,8 +23,13 @@ func newShellCmd(ctx context.Context, shell, command string) (*exec.Cmd, func(),
 		}
 		cleanup = c
 		cmd = exec.CommandContext(ctx, "pwsh", args...)
-	case "sh", "bash", "zsh":
+	case "sh", "bash":
 		cmd = exec.CommandContext(ctx, shell, "-c", command)
+	case "zsh":
+		// Behave like bash where zsh surprises: an unmatched glob such as
+		// --include=*.go stays a literal word instead of aborting the
+		// command, and a word starting with = (=====) is not a path lookup.
+		cmd = exec.CommandContext(ctx, shell, "-o", "NO_NOMATCH", "-o", "NO_EQUALS", "-c", command)
 	case "cmd":
 		return nil, nil, fmt.Errorf("shell cmd is only available on Windows")
 	default:

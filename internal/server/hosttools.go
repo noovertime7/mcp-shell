@@ -33,7 +33,7 @@ func (s *Server) systemInfo(ctx context.Context) string {
 		fmt.Fprintf(&b, ", %d of them missing", missing)
 	}
 	if n := len(diff.PathAdded); n > 0 {
-		fmt.Fprintf(&b, ", %d added in the registry after mcp-shell started (commands get them)", n)
+		fmt.Fprintf(&b, ", %d added from %s (commands get them)", n, diff.From)
 	}
 	b.WriteString(" — get_env name=PATH lists them\n")
 	return b.String()
@@ -108,7 +108,7 @@ func (s *Server) getEnv(in getEnvIn) (string, error) {
 		fmt.Fprintf(&b, "%s=%s\n", k, v)
 	}
 	if scope == "process" && (len(diff.PathAdded) > 0 || len(diff.VarsAdded) > 0) {
-		fmt.Fprintf(&b, "note: commands get mcp-shell's own environment plus %d PATH entries and %d variables set in the registry after it started\n", len(diff.PathAdded), len(diff.VarsAdded))
+		fmt.Fprintf(&b, "note: commands get mcp-shell's own environment plus %d PATH entries and %d variables from %s\n", len(diff.PathAdded), len(diff.VarsAdded), diff.From)
 	}
 	return b.String(), nil
 }
@@ -138,7 +138,7 @@ func (s *Server) describeVar(name, value, scope string, diff hostenv.Diff, showS
 			}
 		}
 		if added[e] {
-			b.WriteString("  [added in the registry after mcp-shell started]")
+			b.WriteString("  [added from " + diff.From + "]")
 		}
 		b.WriteByte('\n')
 	}

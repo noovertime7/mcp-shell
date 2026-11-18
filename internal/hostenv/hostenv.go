@@ -1,7 +1,9 @@
 // Package hostenv builds the environment commands run with and finds
 // executables on it. On Windows it folds in PATH entries and variables that
 // were added to the user or machine environment after mcp-shell started (an
-// installer, setx), so new tools work without restarting mcp-shell.
+// installer, setx), so new tools work without restarting mcp-shell. On macOS
+// and Linux it folds in what a login shell of the user has (Homebrew, gvm,
+// nvm) and sets a UTF-8 locale when none is set.
 package hostenv
 
 import (
@@ -18,14 +20,21 @@ type Diff struct {
 	PathAdded []string
 	// VarsAdded are names of registry variables the process lacked.
 	VarsAdded []string
+	// From names where the additions come from: "the registry" on Windows,
+	// "the login shell" elsewhere.
+	From string
 }
 
 // Environ returns the environment for a new command and what it added to
-// os.Environ(). Elsewhere than Windows it is os.Environ() unchanged.
+// os.Environ(): registry variables on Windows, login shell variables and a
+// UTF-8 LANG elsewhere.
 func Environ() ([]string, Diff) {
 	machine, _ := Scope("machine")
 	user, _ := Scope("user")
-	return merge(os.Environ(), machine, user)
+	env, diff := merge(os.Environ(), machine, user, loginScope())
+	env = withUTF8Locale(env, &diff)
+	diff.From = addedFrom
+	return env, diff
 }
 
 // merge adds to base the variables of the scopes that base lacks and appends

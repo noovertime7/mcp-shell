@@ -5,6 +5,8 @@ package fstools
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -222,7 +224,8 @@ func (f *FS) WriteFile(path, content string, createDirs bool) (string, error) {
 	if existed {
 		verb = "overwrote"
 	}
-	return fmt.Sprintf("%s %s (%d bytes)", verb, p, len(content)), nil
+	sum := sha256.Sum256([]byte(content))
+	return fmt.Sprintf("%s %s (%d bytes, sha256 %s)", verb, p, len(content), hex.EncodeToString(sum[:])), nil
 }
 
 // atomicWrite writes data to a temp file next to p and renames it over p,

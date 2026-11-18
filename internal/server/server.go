@@ -121,11 +121,12 @@ func New(cfg *config.Config) (*Server, error) {
 // Roots returns the resolved roots, for the startup banner.
 func (s *Server) Roots() []string { return s.guard.Roots() }
 
-// Handler returns the HTTP handler: /mcp (authenticated) and /healthz.
+// Handler returns the HTTP handler: /mcp and /files (authenticated) and /healthz.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", s.authenticate(s.mcp))
 	mux.Handle("/mcp/", s.authenticate(s.mcp))
+	mux.Handle("/files", s.authenticate(s.filesHandler()))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		fmt.Fprintf(w, "ok mcp-shell %s\n", Version)
@@ -155,7 +156,8 @@ func (s *Server) instructions() string {
 - For dev servers or anything that keeps running, use start_process, then read_process_output and stop_process when done. read_process_output can wait until_exit, or wait_for a regexp such as "listening on"; tail=true shows the end of long output.
 - Commands are non-interactive: stdin is empty, so pass flags like -y/--yes instead of waiting for prompts.
 - Long output is cut in the middle; the full log is kept on disk (full_output: in the result) and can be read with read_file or grep.
-- glob and grep skip files ignored by .gitignore (build output such as dist/); pass include_ignored=true to search them.%s%s`,
+- glob and grep skip files ignored by .gitignore (build output such as dist/); pass include_ignored=true to search them. read_files reads several files in one call.
+- Moving files between your machine and this host: do not paste large or binary content through write_file or print it with base64. Use HTTP on the same base URL and bearer token as this MCP endpoint (replace the trailing /mcp with /files): PUT <base>/files?path=<dest file>[&overwrite=1][&mkdirs=1][&sha256=<hex>] with the raw bytes as the body; PUT <base>/files?path=<dest dir>&extract=tgz with a .tar.gz body unpacks a whole tree; GET <base>/files?path=<file> returns the file (X-Content-SHA256 header), GET on a directory returns a .tar.gz of it (&exclude=.git,node_modules). Uploads land atomically and reply with size and sha256; file_info gives size and sha256 of files here.%s%s`,
 		runtime.GOOS, scope, strings.Join(s.guard.Roots(), ", "), s.aliasHint(), s.cfg.DefaultShell, s.cfg.CommandTimeoutSec,
 		s.detachHint(), s.shellHint(), s.historyHint())
 }

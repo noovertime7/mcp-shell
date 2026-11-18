@@ -28,12 +28,14 @@
 | `list_roots` | 系统、允许的根目录、路径别名、默认 shell、临时文件目录（`scratch_dir`）、PATH 上有哪些开发工具 |
 | `list_dir` | 列目录（可多层），`.git`、`node_modules` 不展开 |
 | `read_file` | 带行号读取，支持 offset/limit，拒绝二进制 |
-| `write_file` | 新建或整体覆写（原子写入） |
+| `read_files` | 一次读多个文件（最多 20 个），各自带 offset/limit，读取预算在文件间分摊 |
+| `file_info` | 文件的大小、修改时间、sha256；目录给出文件数和总大小。用于核对传输、跨机器比较文件 |
+| `write_file` | 新建或整体覆写（原子写入），结果带大小和 sha256 |
 | `edit_file` | 精确字符串替换，默认要求唯一；保留 CRLF 和 BOM |
 | `multi_edit` | 同一文件多处替换一次完成，按顺序应用；任何一处不匹配则整个文件不写入 |
 | `delete_path` / `move_path` | 删除、移动/重命名；限制目录模式下保护根目录 |
 | `glob` / `grep` | 按 glob 找文件、按正则搜内容；默认跳过 `.gitignore` 忽略的文件（`dist/` 等构建产物），`include_ignored=true` 可搜 |
-| `run_command` | 执行命令并等待，超时或客户端取消时杀掉整个进程树；超过 `max_call_wait_sec` 仍在运行则转为后台进程，结果里给出续读方式 |
+| `run_command` | 执行命令并等待，超时或客户端取消时杀掉整个进程树；超过 `max_call_wait_sec` 仍在运行则转为后台进程，结果里给出续读方式。zsh 以 `NO_NOMATCH`、`NO_EQUALS` 启动，未匹配的 glob（如 `--include=*.go`）和 `=====` 与 bash 行为一致 |
 | `start_process` / `read_process_output` / `list_processes` / `stop_process` | 后台进程（dev server、watcher 等）；`read_process_output` 支持 `until_exit`（等到退出）、`wait_for`（等到输出匹配正则）、`tail`（只看末尾） |
 | `write_process_input` | 向运行中的后台进程标准输入（stdin）写入文本/按键，可选择关闭 stdin |
 | `notify_user` | 在主机屏幕弹出原生系统通知（如构建或长任务完成时提醒），支持标题、内容与提示音 |
@@ -43,15 +45,40 @@
 | `inspect_port` | 检查主机 TCP 端口占用（显示监听进程 PID 与名称），支持传入 `kill: true` 释放端口 |
 | `http_request` | 由主机发起 HTTP/HTTPS 请求，用于本地回环接口联调与服务健康检查 |
 | `web_search` | 网页搜索：依次使用博查搜索 API（配置了 key 时）、SearXNG、必应结果页，返回标题、网址和摘要；可按 `site`、`time_range`、`language` 收窄 |
+| `cursor_agents` / `cursor_read` / `cursor_send` / `cursor_new` | 仅 Windows：控制正在运行的 Cursor，不用重启：列出 Agent（是否在运行）、读对话、发消息、新建 Agent。服务权限要不低于 Cursor（Cursor 以管理员运行时，本服务也要以管理员启动）。会打开 Cursor 的调试端口 `127.0.0.1:9229`，开着时本机进程都能操作 Cursor，重启 Cursor 才关闭 |
 | `web_fetch` | 读取网页为 Markdown：只保留正文（去掉导航、脚本、页头页脚），保留标题、列表、表格、代码和绝对链接，自动转换 GBK 等编码；`find` 只返回提到关键词的段落，`offset` 分段读长页面，`links` 列出页面链接，页面缓存 15 分钟 |
 | `system_info` | 系统版本、用户、CPU、内存、磁盘、开机时长、代码页、时区，以及 git/go/node/pnpm/python/java/docker 等工具的路径和版本 |
 | `get_env` | 查看环境变量：全部、按关键字过滤或按名称；PATH 类变量逐行列出并标出不存在的目录；Windows 上 `scope=user/machine` 查看注册表里的值；疑似密钥的值默认隐藏，`MCP_SHELL_TOKEN` 永不显示 |
+
+### 命令环境
+
+- Windows：并入启动后在注册表里新增的 PATH 和变量（安装器、`setx`），新装的工具不用重启 mcp-shell。
+- macOS / Linux：GUI 或 launchd 启动的服务拿不到 `~/.zprofile`、`~/.zshrc` 里加的东西（Homebrew、gvm、nvm、cargo）。服务每 5 分钟读一次用户登录 shell（`$SHELL -l -i`）的环境，补上自身缺少的 PATH 项和变量（已有的值优先）；没有设置任何 locale 时补 `LANG`（macOS 为 `en_US.UTF-8`），避免中文文件名显示成 `?`。设置 `MCP_SHELL_LOGIN_ENV=0` 关闭。
+
+### 文件传输（`/files`）
+
+大文件、二进制文件和整个目录不要经工具调用以文本传输，改走同一服务上的 HTTP 接口，令牌和 `allowed_ips` 与 `/mcp` 相同，路径同样受根目录限制，每次传输记入操作日志、审计和操作历史：
+
+| 请求 | 作用 |
+|---|---|
+| `PUT /files?path=<文件>[&overwrite=1][&mkdirs=1][&sha256=<hex>]` | 请求体即文件内容；先写临时文件，收完（且 sha256 一致）才原子改名到位；目标已存在时需 `overwrite=1` |
+| `PUT /files?path=<目录>&extract=tgz[&overwrite=1][&mkdirs=1]` | 请求体为 `.tar.gz`，先解到目录内的暂存区，全部校验通过、无冲突后再逐个移入；拒绝 `..` 和绝对路径，跳过符号链接等非常规条目 |
+| `GET /files?path=<文件>` | 返回文件，响应头 `X-Content-SHA256` |
+| `GET /files?path=<目录>[&exclude=.git,node_modules]` | 以 `.tar.gz` 流式返回，sha256 放在 trailer |
+
+上传、下载 2 分钟没有进展即断开并清理临时文件。回复为 JSON（`path`、`bytes`、`sha256`）。客户端示例：
+
+```bash
+curl -X PUT -H "Authorization: Bearer $TOKEN" --data-binary @a.zip \
+  "http://<服务器IP>:8765/files?path=/Users/me/a.zip&mkdirs=1&sha256=$(sha256sum a.zip | cut -d' ' -f1)"
+curl -H "Authorization: Bearer $TOKEN" -o src.tar.gz "http://<服务器IP>:8765/files?path=/Users/me/src&exclude=.git"
+```
 | `operation_history` | 查看历史工具调用（跨重启、跨会话持久保存）：按工具、关键字、失败、仅改动、时间过滤；传 `id` 查看单次调用的参数和输出开头 |
 
 ## 安全边界
 
 - CLI 默认限制目录模式：文件路径与命令 cwd 必须落在 `roots` 内，解析 symlink/junction 后检查。GUI 默认 `unrestricted: true`：开放系统当前用户可访问的文件路径，`roots` 仅决定默认目录；也可在设置中切换为限制目录模式。
-- `/mcp` 需要 `Authorization: Bearer <token>`；`allowed_ips` 限制来源 IP（支持 CIDR）。
+- `/mcp` 和 `/files` 需要 `Authorization: Bearer <token>`；`allowed_ips` 限制来源 IP（支持 CIDR）。
 - `run_command` 可以执行任意命令，命令本身仍能访问 roots 之外的路径。HTTP 服务只应在可信局域网或回环地址使用，不直接暴露到互联网。程序不提供内置公网穿透；跨网络使用需要自行建立可信网络连接。详见 [使用说明](docs/desktop.md#连接与服务生命周期)。
 - 每次工具调用和被拒绝的请求都写入 `audit_log`（JSON lines；`content`/`old_string`/`new_string` 只记长度，`env` 参数的值不记录）。
 - 命令不会继承 `MCP_SHELL_TOKEN`（GUI 用它把令牌交给服务），打印环境变量也看不到访问令牌。

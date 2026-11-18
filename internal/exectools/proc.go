@@ -54,7 +54,9 @@ type Proc struct {
 	mu       sync.Mutex
 	exitCode int
 	timedOut bool
-	ended    time.Time
+	// stopped is set when stop_process killed the process.
+	stopped bool
+	ended   time.Time
 
 	stdin   io.WriteCloser
 	stdinMu sync.Mutex
@@ -82,6 +84,9 @@ func (p *Proc) status() string {
 	defer p.mu.Unlock()
 	if p.timedOut {
 		return fmt.Sprintf("killed: timed out after %s", p.ended.Sub(p.Started).Round(time.Second))
+	}
+	if p.stopped {
+		return fmt.Sprintf("killed by stop_process after %s", p.ended.Sub(p.Started).Round(time.Second))
 	}
 	return fmt.Sprintf("exited (exit_code %d, after %s)", p.exitCode, p.ended.Sub(p.Started).Round(time.Second))
 }
@@ -405,6 +410,9 @@ func (m *Manager) Stop(id string) (string, error) {
 		return "", err
 	}
 	if p.running() {
+		p.mu.Lock()
+		p.stopped = true
+		p.mu.Unlock()
 		p.cancel()
 		select {
 		case <-p.done:

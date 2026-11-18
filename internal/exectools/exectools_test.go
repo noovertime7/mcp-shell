@@ -138,8 +138,12 @@ func TestBackgroundProcess(t *testing.T) {
 	if !strings.Contains(out, "started") || !strings.Contains(out, "running") {
 		t.Fatalf("unexpected read:\n%s", out)
 	}
-	if _, err := m.Stop(p.ID); err != nil {
+	stopped, err := m.Stop(p.ID)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if !strings.Contains(stopped, "killed by stop_process") {
+		t.Fatalf("stop result should say who killed it: %s", stopped)
 	}
 	if !strings.Contains(m.List(), "no background processes") {
 		t.Fatalf("process not forgotten: %s", m.List())
